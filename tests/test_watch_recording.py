@@ -36,6 +36,7 @@ def _watch_args() -> argparse.Namespace:
         rt_model="gpt-5-mini",
         rt_stt_model="gpt-4o-mini-transcribe",
         rt_keywords_file="config/realtime_keywords.json",
+        rt_api_base_url="",
         rt_request_timeout_sec=12.0,
         rt_retry_count=2,
         rt_alert_threshold=90,

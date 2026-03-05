@@ -150,6 +150,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Keyword configuration file path for realtime insight",
     )
     watch.add_argument(
+        "--rt-api-base-url",
+        default="",
+        help="Optional OpenAI-compatible API base URL (e.g. https://aihubmix.com/v1)",
+    )
+    watch.add_argument(
         "--rt-request-timeout-sec",
         type=float,
         default=12.0,
@@ -249,6 +254,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--rt-keywords-file",
         default="config/realtime_keywords.json",
         help="Keyword config file path reused by analysis stage",
+    )
+    simulate.add_argument(
+        "--rt-api-base-url",
+        default="",
+        help="Optional OpenAI-compatible API base URL (e.g. https://aihubmix.com/v1)",
     )
     simulate.add_argument(
         "--rt-request-timeout-sec",

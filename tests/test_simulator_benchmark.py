@@ -95,6 +95,9 @@ class SimulatorBenchmarkTests(unittest.TestCase):
             )
             self.assertIn("serial", result4.summary)
             self.assertIn("parallel", result4.summary)
+            self.assertIn("transcript_samples", result4.summary)
+            self.assertTrue(result4.summary["transcript_samples"])
+            self.assertIn("text", result4.summary["transcript_samples"][0])
 
             result5 = run_mode(
                 mode=SimulatorMode.MODE5,
@@ -115,6 +118,9 @@ class SimulatorBenchmarkTests(unittest.TestCase):
             )
             self.assertIn("serial", result5.summary)
             self.assertIn("parallel", result5.summary)
+            self.assertIn("analysis_samples", result5.summary)
+            self.assertTrue(result5.summary["analysis_samples"])
+            self.assertIn("summary", result5.summary["analysis_samples"][0])
 
 
 if __name__ == "__main__":

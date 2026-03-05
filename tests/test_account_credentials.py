@@ -5,7 +5,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from src.common.account import parse_account_file, resolve_credentials, resolve_openai_api_key
+from src.common.account import (
+    parse_account_file,
+    resolve_credentials,
+    resolve_openai_api_key,
+    resolve_openai_client_settings,
+)
 
 
 class AccountCredentialTests(unittest.TestCase):
@@ -75,6 +80,35 @@ class AccountCredentialTests(unittest.TestCase):
                 key, err = resolve_openai_api_key()
         self.assertEqual(key, "")
         self.assertIn("missing OpenAI API key", err)
+
+    def test_resolve_openai_client_settings_aihubmix_defaults_base_url(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / ".account"
+            path.write_text("AIHUBMIX_API_KEY=ahm_key\n", encoding="utf-8")
+            with (
+                mock.patch("src.common.account.default_account_file", return_value=path),
+                mock.patch.dict("os.environ", {}, clear=True),
+            ):
+                key, base_url, err = resolve_openai_client_settings()
+        self.assertEqual(key, "ahm_key")
+        self.assertEqual(base_url, "https://aihubmix.com/v1")
+        self.assertEqual(err, "")
+
+    def test_resolve_openai_client_settings_respects_explicit_base_url(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / ".account"
+            path.write_text(
+                "AIHUBMIX_API_KEY=ahm_key\nOPENAI_BASE_URL=https://example.gateway/v1\n",
+                encoding="utf-8",
+            )
+            with (
+                mock.patch("src.common.account.default_account_file", return_value=path),
+                mock.patch.dict("os.environ", {}, clear=True),
+            ):
+                key, base_url, err = resolve_openai_client_settings()
+        self.assertEqual(key, "ahm_key")
+        self.assertEqual(base_url, "https://example.gateway/v1")
+        self.assertEqual(err, "")
 
 
 if __name__ == "__main__":

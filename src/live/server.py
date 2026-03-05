@@ -268,6 +268,7 @@ def run_watch(args: argparse.Namespace) -> int:
                 model=(args.rt_model or "").strip() or "gpt-5-mini",
                 stt_model=(args.rt_stt_model or "").strip() or "gpt-4o-mini-transcribe",
                 keywords_file=keywords_file,
+                api_base_url=(args.rt_api_base_url or "").strip(),
                 request_timeout_sec=max(2.0, float(args.rt_request_timeout_sec)),
                 retry_count=max(0, int(args.rt_retry_count)),
                 alert_threshold=max(0, min(100, int(args.rt_alert_threshold))),

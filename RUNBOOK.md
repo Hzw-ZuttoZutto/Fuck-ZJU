@@ -45,7 +45,12 @@ python -c "import requests; print(requests.__version__)"
 cat > .account <<'EOF'
 USERNAME=你的统一认证账号
 PASSWORD=你的统一认证密码
+# 二选一即可：
+# 1) OpenAI 官方 key
 OPENAI_API_KEY=你的OpenAIKey
+# 2) AIHubMix key（OpenAI 兼容网关）
+# AIHUBMIX_API_KEY=你的AIHubMixKey
+# OPENAI_BASE_URL=https://aihubmix.com/v1
 EOF
 ```
 
@@ -132,8 +137,9 @@ python -m src.main watch \
   --sub-id 1895397 \
   --record-dir ./records \
   --rt-insight-enabled \
-  --rt-stt-model gpt-4o-mini-transcribe \
+  --rt-stt-model whisper-large-v3 \
   --rt-model gpt-5-mini \
+  --rt-api-base-url https://aihubmix.com/v1 \
   --rt-chunk-seconds 10 \
   --rt-context-window-seconds 180 \
   --rt-keywords-file config/realtime_keywords.json \
@@ -206,6 +212,8 @@ python -m src.main simulate \
 python -m src.main simulate \
   --mode 2 \
   --scenario-file tests/simulator/scenarios/mode2/example.yaml \
+  --rt-api-base-url https://aihubmix.com/v1 \
+  --rt-stt-model whisper-large-v3 \
   --precompute-workers 4
 ```
 
@@ -214,7 +222,9 @@ python -m src.main simulate \
 ```bash
 python -m src.main simulate \
   --mode 4 \
-  --scenario-file tests/simulator/scenarios/mode4/example.yaml
+  --scenario-file tests/simulator/scenarios/mode4/example.yaml \
+  --rt-api-base-url https://aihubmix.com/v1 \
+  --rt-stt-model whisper-large-v3
 ```
 
 关键说明：
@@ -323,7 +333,7 @@ ssh clusters -L 8765:127.0.0.1:8765
 可能原因：
 
 - 未传 `--rt-insight-enabled`
-- `.account` 未配置 `OPENAI_API_KEY`（或环境变量也未设置）
+- `.account` 未配置 `OPENAI_API_KEY` / `AIHUBMIX_API_KEY`（或环境变量也未设置）
 - `openai` SDK 未安装
 - `ffmpeg` 不在 PATH
 - `--rt-stt-model` 或 `--rt-model` 对当前账号不可用
@@ -331,7 +341,8 @@ ssh clusters -L 8765:127.0.0.1:8765
 处理：
 
 - `pip install -r requirements.txt`
-- 检查 `.account` 中是否包含 `OPENAI_API_KEY=...`
+- 检查 `.account` 中是否包含 `OPENAI_API_KEY=...` 或 `AIHUBMIX_API_KEY=...`
+- 若使用 AIHubMix，补充 `OPENAI_BASE_URL=https://aihubmix.com/v1` 或传 `--rt-api-base-url https://aihubmix.com/v1`
 - 检查启动日志是否有 `[rt-insight]` 错误提示
 - 改用可用模型：`--rt-stt-model <stt_model>` / `--rt-model <analysis_model>`
 
@@ -340,7 +351,7 @@ ssh clusters -L 8765:127.0.0.1:8765
 
 - `tests/simulator/mp3_inputs/` 下无 `mp3` 文件
 - `--scenario-file` 与 `--mode` 不一致
-- 模式2/3预计算时缺少 OpenAI API key（`.account` 或环境变量）
+- 模式2/3预计算时缺少 OpenAI/AIHubMix API key（`.account` 或环境变量）
 - 场景中 `history.by_seq.visibility` 非18位 `0/1` 字符串
 - 模式4/5基准测试请求频率过高触发限流
 
@@ -348,7 +359,8 @@ ssh clusters -L 8765:127.0.0.1:8765
 
 - 先执行：`ls tests/simulator/mp3_inputs/*.mp3`
 - 校验 YAML：`mode` 字段必须与 CLI `--mode` 完全一致
-- 检查 `.account` 中是否存在 `OPENAI_API_KEY=...`
+- 检查 `.account` 中是否存在 `OPENAI_API_KEY=...` 或 `AIHUBMIX_API_KEY=...`
+- 若使用 AIHubMix，补充 `OPENAI_BASE_URL=https://aihubmix.com/v1` 或传 `--rt-api-base-url https://aihubmix.com/v1`
 - 从 `tests/simulator/scenarios/modeX/example.yaml` 复制模板再改
 - 降低并发和重复次数：`benchmark.parallel_workers` / `benchmark.repeats`
 

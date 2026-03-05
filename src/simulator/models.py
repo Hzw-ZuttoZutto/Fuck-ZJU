@@ -132,6 +132,7 @@ class SimulateRuntimeConfig:
     rt_model: str
     rt_stt_model: str
     rt_keywords_file: Path
+    rt_api_base_url: str
     rt_request_timeout_sec: float
     rt_stage_timeout_sec: float
     rt_retry_count: int

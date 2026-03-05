@@ -72,6 +72,7 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(args.rt_model, "gpt-5-mini")
         self.assertEqual(args.rt_stt_model, "gpt-4o-mini-transcribe")
         self.assertEqual(args.rt_keywords_file, "config/realtime_keywords.json")
+        self.assertEqual(args.rt_api_base_url, "")
         self.assertEqual(args.rt_request_timeout_sec, 12.0)
         self.assertEqual(args.rt_retry_count, 2)
         self.assertEqual(args.rt_alert_threshold, 90)
@@ -113,6 +114,8 @@ class CliParserTests(unittest.TestCase):
                 "gpt-4o-mini-transcribe",
                 "--rt-keywords-file",
                 "/tmp/k.json",
+                "--rt-api-base-url",
+                "https://aihubmix.com/v1",
                 "--rt-request-timeout-sec",
                 "8",
                 "--rt-retry-count",
@@ -141,6 +144,7 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(args.rt_model, "gpt-5-mini")
         self.assertEqual(args.rt_stt_model, "gpt-4o-mini-transcribe")
         self.assertEqual(args.rt_keywords_file, "/tmp/k.json")
+        self.assertEqual(args.rt_api_base_url, "https://aihubmix.com/v1")
         self.assertEqual(args.rt_request_timeout_sec, 8.0)
         self.assertEqual(args.rt_retry_count, 4)
         self.assertEqual(args.rt_alert_threshold, 88)

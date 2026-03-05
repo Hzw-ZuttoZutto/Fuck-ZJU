@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -315,12 +316,22 @@ def _run_mode4_benchmark(
     repeats: int,
     log_fn: Callable[[str], None],
 ) -> dict:
+    errors: list[str] = []
+    transcript_by_chunk: dict[str, dict] = {}
+    transcript_lock = threading.Lock()
     serial_samples = _benchmark_serial(
         tasks=[
-            lambda chunk=chunk: client.transcribe_chunk(
-                chunk_path=chunk,
-                stt_model=stt_model,
-                timeout_sec=request_timeout_sec,
+            _wrap_task_with_error_capture(
+                _build_mode4_task(
+                    client=client,
+                    chunk_path=chunk,
+                    stt_model=stt_model,
+                    timeout_sec=request_timeout_sec,
+                    transcript_sink=transcript_by_chunk,
+                    transcript_lock=transcript_lock,
+                    source="serial",
+                ),
+                error_sink=errors,
             )
             for _ in range(repeats)
             for chunk in chunk_paths
@@ -329,10 +340,17 @@ def _run_mode4_benchmark(
 
     parallel_samples = _benchmark_parallel(
         tasks=[
-            lambda chunk=chunk: client.transcribe_chunk(
-                chunk_path=chunk,
-                stt_model=stt_model,
-                timeout_sec=request_timeout_sec,
+            _wrap_task_with_error_capture(
+                _build_mode4_task(
+                    client=client,
+                    chunk_path=chunk,
+                    stt_model=stt_model,
+                    timeout_sec=request_timeout_sec,
+                    transcript_sink=transcript_by_chunk,
+                    transcript_lock=transcript_lock,
+                    source="parallel",
+                ),
+                error_sink=errors,
             )
             for _ in range(repeats)
             for chunk in chunk_paths
@@ -344,6 +362,8 @@ def _run_mode4_benchmark(
         "mode": 4,
         "serial": _summarize_samples(serial_samples),
         "parallel": _summarize_samples(parallel_samples),
+        "errors": _summarize_error_messages(errors),
+        "transcript_samples": _build_mode4_transcript_samples(chunk_paths, transcript_by_chunk),
     }
     log_fn(
         "[simulate] mode4 benchmark "
@@ -371,14 +391,26 @@ def _run_mode5_benchmark(
         samples.append((current, context))
         history.append(f"[seq={seq}] {current}")
 
+    errors: list[str] = []
+    analysis_samples: list[dict] = []
+    analysis_sample_limit = 8
+    sample_lock = threading.Lock()
+
     serial_samples = _benchmark_serial(
         tasks=[
-            lambda pair=pair: client.analyze_text(
-                analysis_model=analysis_model,
-                keywords=keywords,
-                current_text=pair[0],
-                context_text=pair[1],
-                timeout_sec=request_timeout_sec,
+            _wrap_task_with_error_capture(
+                _build_mode5_task(
+                    client=client,
+                    analysis_model=analysis_model,
+                    keywords=keywords,
+                    pair=pair,
+                    timeout_sec=request_timeout_sec,
+                    sample_sink=analysis_samples,
+                    sample_limit=analysis_sample_limit,
+                    sample_lock=sample_lock,
+                    source="serial",
+                ),
+                error_sink=errors,
             )
             for _ in range(repeats)
             for pair in samples
@@ -387,12 +419,19 @@ def _run_mode5_benchmark(
 
     parallel_samples = _benchmark_parallel(
         tasks=[
-            lambda pair=pair: client.analyze_text(
-                analysis_model=analysis_model,
-                keywords=keywords,
-                current_text=pair[0],
-                context_text=pair[1],
-                timeout_sec=request_timeout_sec,
+            _wrap_task_with_error_capture(
+                _build_mode5_task(
+                    client=client,
+                    analysis_model=analysis_model,
+                    keywords=keywords,
+                    pair=pair,
+                    timeout_sec=request_timeout_sec,
+                    sample_sink=analysis_samples,
+                    sample_limit=analysis_sample_limit,
+                    sample_lock=sample_lock,
+                    source="parallel",
+                ),
+                error_sink=errors,
             )
             for _ in range(repeats)
             for pair in samples
@@ -404,6 +443,8 @@ def _run_mode5_benchmark(
         "mode": 5,
         "serial": _summarize_samples(serial_samples),
         "parallel": _summarize_samples(parallel_samples),
+        "errors": _summarize_error_messages(errors),
+        "analysis_samples": analysis_samples,
     }
     log_fn(
         "[simulate] mode5 benchmark "
@@ -476,3 +517,145 @@ def _summarize_samples(samples: list[tuple[bool, float]]) -> dict:
         "max_sec": float(max(durations)),
         "min_sec": float(min(durations)),
     }
+
+
+def _wrap_task_with_error_capture(
+    task: Callable[[], object],
+    *,
+    error_sink: list[str],
+) -> Callable[[], object]:
+    def wrapped() -> object:
+        try:
+            return task()
+        except Exception as exc:
+            message = f"{type(exc).__name__}: {str(exc).strip()}"
+            error_sink.append(message[:600])
+            raise
+
+    return wrapped
+
+
+def _summarize_error_messages(messages: list[str], limit: int = 5) -> dict:
+    if not messages:
+        return {"count": 0, "unique_count": 0, "samples": []}
+
+    counts: dict[str, int] = {}
+    for message in messages:
+        counts[message] = counts.get(message, 0) + 1
+
+    ranked = sorted(counts.items(), key=lambda item: item[1], reverse=True)
+    samples = [{"message": message, "count": count} for message, count in ranked[: max(1, int(limit))]]
+    return {
+        "count": len(messages),
+        "unique_count": len(counts),
+        "samples": samples,
+    }
+
+
+def _build_mode4_task(
+    *,
+    client: OpenAIInsightClient,
+    chunk_path: Path,
+    stt_model: str,
+    timeout_sec: float,
+    transcript_sink: dict[str, dict],
+    transcript_lock: threading.Lock,
+    source: str,
+) -> Callable[[], str]:
+    def task() -> str:
+        transcript = client.transcribe_chunk(
+            chunk_path=chunk_path,
+            stt_model=stt_model,
+            timeout_sec=timeout_sec,
+        )
+        payload = {
+            "chunk_file": chunk_path.name,
+            "text": (transcript or "").strip(),
+            "source": source,
+        }
+        if payload["text"]:
+            with transcript_lock:
+                transcript_sink.setdefault(chunk_path.name, payload)
+        return transcript
+
+    return task
+
+
+def _build_mode4_transcript_samples(
+    chunk_paths: list[Path],
+    transcript_by_chunk: dict[str, dict],
+) -> list[dict]:
+    out: list[dict] = []
+    for chunk_path in chunk_paths:
+        payload = transcript_by_chunk.get(chunk_path.name)
+        if payload:
+            out.append(payload)
+    return out
+
+
+def _build_mode5_task(
+    *,
+    client: OpenAIInsightClient,
+    analysis_model: str,
+    keywords: KeywordConfig,
+    pair: tuple[str, str],
+    timeout_sec: float,
+    sample_sink: list[dict],
+    sample_limit: int,
+    sample_lock: threading.Lock,
+    source: str,
+) -> Callable[[], InsightModelResult]:
+    def task() -> InsightModelResult:
+        result = client.analyze_text(
+            analysis_model=analysis_model,
+            keywords=keywords,
+            current_text=pair[0],
+            context_text=pair[1],
+            timeout_sec=timeout_sec,
+        )
+        _capture_mode5_result_sample(
+            sample_sink=sample_sink,
+            sample_limit=sample_limit,
+            sample_lock=sample_lock,
+            source=source,
+            current_text=pair[0],
+            context_text=pair[1],
+            result=result,
+        )
+        return result
+
+    return task
+
+
+def _capture_mode5_result_sample(
+    *,
+    sample_sink: list[dict],
+    sample_limit: int,
+    sample_lock: threading.Lock,
+    source: str,
+    current_text: str,
+    context_text: str,
+    result: InsightModelResult,
+) -> None:
+    payload = {
+        "source": source,
+        "current_text": _truncate_text(current_text, 160),
+        "context_preview": _truncate_text(context_text, 200),
+        "important": bool(result.important),
+        "summary": (result.summary or "").strip(),
+        "context_summary": (result.context_summary or "").strip(),
+        "matched_terms": list(result.matched_terms or []),
+        "reason": (result.reason or "").strip(),
+    }
+    with sample_lock:
+        if len(sample_sink) >= max(1, int(sample_limit)):
+            return
+        sample_sink.append(payload)
+
+
+def _truncate_text(text: str, max_len: int) -> str:
+    raw = (text or "").strip()
+    limit = max(8, int(max_len))
+    if len(raw) <= limit:
+        return raw
+    return f"{raw[:limit]}..."

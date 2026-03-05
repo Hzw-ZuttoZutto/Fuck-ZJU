@@ -104,6 +104,59 @@ class OpenAIInsightClientTests(unittest.TestCase):
                     timeout_sec=2.0,
                 )
 
+    def test_analyze_temperature_fallback_for_gpt5(self) -> None:
+        class _FallbackResponses:
+            def __init__(self) -> None:
+                self.calls: list[dict] = []
+
+            def create(self, **kwargs):
+                self.calls.append(kwargs)
+                if "temperature" in kwargs:
+                    raise ValueError("Unsupported parameter: 'temperature' is not supported with this model.")
+                return type(
+                    "Resp",
+                    (),
+                    {
+                        "output_text": (
+                            '{"important": false, "summary": "当前没有什么重要内容", '
+                            '"context_summary": "无重要内容", "matched_terms": [], "reason": "none"}'
+                        )
+                    },
+                )()
+
+        class _FallbackOpenAI:
+            def __init__(self, *, api_key: str, timeout: float) -> None:
+                self.audio = _FakeAudio()
+                self.responses = _FallbackResponses()
+
+        with mock.patch("src.live.insight.openai_client._load_openai_cls", return_value=_FallbackOpenAI):
+            client = OpenAIInsightClient(api_key="k", timeout_sec=12.0)
+            result = client.analyze_text(
+                analysis_model="gpt-5-mini",
+                keywords=KeywordConfig(),
+                current_text="现在开始签到",
+                context_text="无历史文本块",
+                timeout_sec=2.0,
+            )
+            self.assertFalse(result.important)
+
+    def test_init_supports_custom_base_url(self) -> None:
+        captured: dict = {}
+
+        class _CaptureOpenAI:
+            def __init__(self, **kwargs) -> None:
+                captured.update(kwargs)
+                self.audio = _FakeAudio()
+                self.responses = _FakeResponses("{}")
+
+        with mock.patch("src.live.insight.openai_client._load_openai_cls", return_value=_CaptureOpenAI):
+            _ = OpenAIInsightClient(
+                api_key="k",
+                timeout_sec=12.0,
+                base_url="https://aihubmix.com/v1",
+            )
+        self.assertEqual(captured.get("base_url"), "https://aihubmix.com/v1")
+
 
 if __name__ == "__main__":
     unittest.main()

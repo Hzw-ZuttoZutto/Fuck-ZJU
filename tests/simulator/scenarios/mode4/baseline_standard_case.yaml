@@ -1,0 +1,20 @@
+mode: 4
+name: mode4_stt_benchmark_baseline_standard_case
+seed: 7
+dataset:
+  files:
+    - 标准测试用例.mp3
+feed:
+  mode: burst
+control:
+  translation:
+    rules: []
+  analysis:
+    rules: []
+history:
+  by_seq: []
+precompute:
+  workers: 4
+benchmark:
+  parallel_workers: 4
+  repeats: 5

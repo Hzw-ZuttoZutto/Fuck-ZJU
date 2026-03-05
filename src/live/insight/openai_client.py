@@ -34,11 +34,18 @@ class InsightModelResult:
 
 
 class OpenAIInsightClient:
-    def __init__(self, *, api_key: str, timeout_sec: float) -> None:
+    def __init__(self, *, api_key: str, timeout_sec: float, base_url: str = "") -> None:
         if not api_key:
             raise ValueError("OPENAI_API_KEY is empty")
         openai_cls = _load_openai_cls()
-        self.client = openai_cls(api_key=api_key, timeout=max(2.0, float(timeout_sec)))
+        kwargs: dict[str, Any] = {
+            "api_key": api_key,
+            "timeout": max(2.0, float(timeout_sec)),
+        }
+        normalized_base_url = (base_url or "").strip()
+        if normalized_base_url:
+            kwargs["base_url"] = normalized_base_url
+        self.client = openai_cls(**kwargs)
 
     def transcribe_chunk(
         self,
@@ -68,9 +75,9 @@ class OpenAIInsightClient:
     ) -> InsightModelResult:
         if not analysis_model:
             raise ValueError("analysis_model is empty")
-        response = self.client.responses.create(
-            model=analysis_model,
-            input=[
+        payload = {
+            "model": analysis_model,
+            "input": [
                 {
                     "role": "system",
                     "content": [{"type": "input_text", "text": build_system_prompt()}],
@@ -89,10 +96,10 @@ class OpenAIInsightClient:
                     ],
                 },
             ],
-            temperature=0,
-            max_output_tokens=320,
-            timeout=max(1.0, float(timeout_sec)),
-        )
+            "max_output_tokens": 320,
+            "timeout": max(1.0, float(timeout_sec)),
+        }
+        response = self._create_analysis_response(payload)
         output_text = _extract_output_text(response)
         payload = _parse_json_payload(output_text)
         return InsightModelResult(
@@ -102,6 +109,17 @@ class OpenAIInsightClient:
             matched_terms=_to_str_list(payload.get("matched_terms")),
             reason=str(payload.get("reason", "")).strip(),
         )
+
+    def _create_analysis_response(self, payload: dict[str, Any]) -> Any:
+        with_temperature = dict(payload)
+        with_temperature["temperature"] = 0
+        try:
+            return self.client.responses.create(**with_temperature)
+        except Exception as exc:
+            # gpt-5 family may reject temperature; retry once without it.
+            if _is_temperature_unsupported_error(exc):
+                return self.client.responses.create(**payload)
+            raise
 
 
 def _extract_transcript_text(response: Any) -> str:
@@ -204,3 +222,8 @@ def _to_str_list(value: Any) -> list[str]:
         if text:
             items.append(text)
     return items
+
+
+def _is_temperature_unsupported_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "unsupported parameter" in message and "temperature" in message

@@ -38,30 +38,55 @@ def parse_account_file(path: Path) -> tuple[str, str]:
 
 
 def resolve_openai_api_key(*, env_name: str = "OPENAI_API_KEY") -> tuple[str, str]:
-    resolved_env_name = (env_name or "OPENAI_API_KEY").strip() or "OPENAI_API_KEY"
-    account_file = default_account_file()
-    account_read_error = ""
+    key, _, err = resolve_openai_client_settings(api_key_env_name=env_name, base_url_env_name="OPENAI_BASE_URL")
+    return key, err
 
+
+def resolve_openai_base_url(*, env_name: str = "OPENAI_BASE_URL") -> str:
+    _, base_url, _ = resolve_openai_client_settings(
+        api_key_env_name="OPENAI_API_KEY",
+        base_url_env_name=env_name,
+    )
+    return base_url
+
+
+def resolve_openai_client_settings(
+    *,
+    api_key_env_name: str = "OPENAI_API_KEY",
+    base_url_env_name: str = "OPENAI_BASE_URL",
+) -> tuple[str, str, str]:
+    resolved_api_env = (api_key_env_name or "OPENAI_API_KEY").strip() or "OPENAI_API_KEY"
+    resolved_base_env = (base_url_env_name or "OPENAI_BASE_URL").strip() or "OPENAI_BASE_URL"
+
+    account_file = default_account_file()
+    account_entries: dict[str, str] = {}
+    account_read_error = ""
     if account_file.exists():
         try:
-            entries = _parse_account_entries(account_file)
-            account_key = _read_openai_key_from_entries(entries, resolved_env_name)
-            if account_key:
-                return account_key, ""
+            account_entries = _parse_account_entries(account_file)
         except OSError as exc:
             account_read_error = f"failed to read account file {account_file}: {exc}"
 
-    env_key = os.environ.get(resolved_env_name, "").strip()
-    if env_key:
-        return env_key, ""
-
-    if account_read_error:
-        return "", account_read_error
-
-    return "", (
-        f"missing OpenAI API key: set {resolved_env_name} in {account_file} "
-        f"or export {resolved_env_name}"
+    key, key_source = _resolve_openai_key(
+        account_entries=account_entries,
+        api_key_env_name=resolved_api_env,
     )
+    base_url = _resolve_openai_base_url(
+        account_entries=account_entries,
+        base_url_env_name=resolved_base_env,
+    )
+
+    if not key:
+        if account_read_error:
+            return "", "", account_read_error
+        return "", "", (
+            f"missing OpenAI API key: set {resolved_api_env} / AIHUBMIX_API_KEY in {account_file} "
+            f"or export {resolved_api_env} / AIHUBMIX_API_KEY"
+        )
+
+    if not base_url and key_source == "aihubmix":
+        base_url = "https://aihubmix.com/v1"
+    return key, base_url, ""
 
 
 def _read_openai_key_from_entries(entries: dict[str, str], env_name: str) -> str:
@@ -72,6 +97,65 @@ def _read_openai_key_from_entries(entries: dict[str, str], env_name: str) -> str
             continue
         seen.add(candidate)
         value = (entries.get(candidate) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _resolve_openai_key(
+    *,
+    account_entries: dict[str, str],
+    api_key_env_name: str,
+) -> tuple[str, str]:
+    account_candidates = [
+        (api_key_env_name.strip().lower(), "openai"),
+        ("openai_api_key", "openai"),
+        ("openai_key", "openai"),
+        ("aihubmix_api_key", "aihubmix"),
+    ]
+    for key_name, source in account_candidates:
+        if not key_name:
+            continue
+        value = (account_entries.get(key_name) or "").strip()
+        if value:
+            return value, source
+
+    env_candidates = [
+        (api_key_env_name.strip(), "openai"),
+        ("AIHUBMIX_API_KEY", "aihubmix"),
+    ]
+    for key_name, source in env_candidates:
+        if not key_name:
+            continue
+        value = os.environ.get(key_name, "").strip()
+        if value:
+            return value, source
+    return "", ""
+
+
+def _resolve_openai_base_url(
+    *,
+    account_entries: dict[str, str],
+    base_url_env_name: str,
+) -> str:
+    account_candidates = [
+        base_url_env_name.strip().lower(),
+        "openai_base_url",
+        "aihubmix_base_url",
+        "base_url",
+    ]
+    for key_name in account_candidates:
+        if not key_name:
+            continue
+        value = (account_entries.get(key_name) or "").strip()
+        if value:
+            return value
+
+    env_candidates = [base_url_env_name.strip(), "AIHUBMIX_BASE_URL"]
+    for key_name in env_candidates:
+        if not key_name:
+            continue
+        value = os.environ.get(key_name, "").strip()
         if value:
             return value
     return ""

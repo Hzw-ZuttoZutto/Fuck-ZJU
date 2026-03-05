@@ -57,6 +57,8 @@ class RealtimeInsightConfig:
     alert_threshold: int = 90
     poll_interval_sec: float = 1.0
     api_key_env: str = "OPENAI_API_KEY"
+    base_url_env: str = "OPENAI_BASE_URL"
+    api_base_url: str = ""
     max_concurrency: int = 5
     stage_timeout_sec: float = 60.0
     context_min_ready: int = 15

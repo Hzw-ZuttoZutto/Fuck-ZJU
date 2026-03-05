@@ -5,7 +5,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from src.common.account import resolve_openai_api_key
+from src.common.account import resolve_openai_client_settings
 from src.live.insight.models import KeywordConfig, RealtimeInsightConfig, format_local_ts
 from src.live.insight.openai_client import OpenAIInsightClient
 from src.live.insight.stage_processor import InsightStageProcessor
@@ -156,6 +156,7 @@ def _build_runtime_config(args: argparse.Namespace) -> SimulateRuntimeConfig:
         rt_model=(args.rt_model or "").strip() or "gpt-5-mini",
         rt_stt_model=(args.rt_stt_model or "").strip() or "gpt-4o-mini-transcribe",
         rt_keywords_file=keywords_file,
+        rt_api_base_url=(args.rt_api_base_url or "").strip(),
         rt_request_timeout_sec=max(1.0, float(args.rt_request_timeout_sec)),
         rt_stage_timeout_sec=max(1.0, float(args.rt_stage_timeout_sec)),
         rt_retry_count=max(0, int(args.rt_retry_count)),
@@ -168,13 +169,23 @@ def _build_openai_client(
     *,
     required: bool,
 ) -> OpenAIInsightClient | None:
-    api_key, key_error = resolve_openai_api_key(env_name="OPENAI_API_KEY")
+    api_key, resolved_base_url, key_error = resolve_openai_client_settings(
+        api_key_env_name="OPENAI_API_KEY",
+        base_url_env_name="OPENAI_BASE_URL",
+    )
     if not api_key:
         if required:
             print(f"[simulate] {key_error}")
         return None
+    base_url = (runtime.rt_api_base_url or "").strip() or resolved_base_url
     try:
-        return OpenAIInsightClient(api_key=api_key, timeout_sec=runtime.rt_request_timeout_sec)
+        if base_url:
+            print(f"[simulate] using OpenAI-compatible base URL: {base_url}")
+        return OpenAIInsightClient(
+            api_key=api_key,
+            timeout_sec=runtime.rt_request_timeout_sec,
+            base_url=base_url,
+        )
     except Exception as exc:
         if required:
             print(f"[simulate] failed to initialize OpenAI client: {exc}")

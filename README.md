@@ -27,7 +27,12 @@ pip install -r requirements.txt
 cat > .account <<'EOF'
 USERNAME=你的统一认证账号
 PASSWORD=你的统一认证密码
+# 二选一即可：
+# 1) OpenAI 官方 key
 OPENAI_API_KEY=你的OpenAIKey
+# 2) AIHubMix key（OpenAI 兼容网关）
+# AIHUBMIX_API_KEY=你的AIHubMixKey
+# OPENAI_BASE_URL=https://aihubmix.com/v1
 EOF
 
 # 语法检查 + 测试
@@ -74,6 +79,7 @@ python -m src.main watch \
   --rt-context-min-ready 15 \
   --rt-context-recent-required 4 \
   --rt-context-wait-timeout-sec 15 \
+  --rt-api-base-url https://aihubmix.com/v1 \
   --rt-keywords-file config/realtime_keywords.json
 
 # 启动仿真器（mode1：全流程）
@@ -88,19 +94,27 @@ python -m src.main simulate \
 python -m src.main simulate \
   --mode 2 \
   --scenario-file tests/simulator/scenarios/mode2/example.yaml \
+  --rt-api-base-url https://aihubmix.com/v1 \
+  --rt-stt-model whisper-large-v3 \
   --precompute-workers 4
 
 # 启动仿真器（mode4：翻译 API 响应时间基准）
 python -m src.main simulate \
   --mode 4 \
-  --scenario-file tests/simulator/scenarios/mode4/example.yaml
+  --scenario-file tests/simulator/scenarios/mode4/example.yaml \
+  --rt-api-base-url https://aihubmix.com/v1 \
+  --rt-stt-model whisper-large-v3
 ```
 
 凭据规则：
 
-- 默认从工作区根目录 `.account` 读取 `USERNAME`、`PASSWORD`、`OPENAI_API_KEY`。
+- 默认从工作区根目录 `.account` 读取 `USERNAME`、`PASSWORD` 和 AI 模型 key。
 - 仍可通过 `--username/--password` 显式传入；CLI 传参优先级更高。
-- `OPENAI_API_KEY` 优先读取 `.account`；若文件未配置则回退到同名环境变量。
+- AI key 读取优先级：
+  - `.account` 中 `OPENAI_API_KEY` / `AIHUBMIX_API_KEY`
+  - 环境变量 `OPENAI_API_KEY` / `AIHUBMIX_API_KEY`
+- Base URL 可通过 `.account` 或环境变量中的 `OPENAI_BASE_URL` / `AIHUBMIX_BASE_URL` 指定。
+- 若只配置 `AIHUBMIX_API_KEY` 且未显式给 Base URL，默认使用 `https://aihubmix.com/v1`。
 
 录制产物：
 

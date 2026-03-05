@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from src.common.account import resolve_openai_api_key
+from src.common.account import resolve_openai_client_settings
 from src.live.insight.audio_chunker import RealtimeAudioChunker
 from src.live.insight.models import (
     InsightEvent,
@@ -109,16 +109,22 @@ class RealtimeInsightService:
             self._log("[rt-insight] ffmpeg not found; disabling realtime insight")
             return False
         if self._client is None:
-            api_key, key_error = resolve_openai_api_key(env_name=self.config.api_key_env)
+            api_key, resolved_base_url, key_error = resolve_openai_client_settings(
+                api_key_env_name=self.config.api_key_env,
+                base_url_env_name=self.config.base_url_env,
+            )
             if not api_key:
                 self._log(
                     f"[rt-insight] {key_error}; realtime insight disabled"
                 )
                 return False
+            base_url = (self.config.api_base_url or "").strip() or resolved_base_url
+            self.config.api_base_url = base_url
             try:
                 self._client = OpenAIInsightClient(
                     api_key=api_key,
                     timeout_sec=self.config.request_timeout_sec,
+                    base_url=base_url,
                 )
             except Exception as exc:
                 self._log(f"[rt-insight] failed to initialize OpenAI client: {exc}")
@@ -126,7 +132,8 @@ class RealtimeInsightService:
         self._log(
             "[rt-insight] started with "
             f"stt_model={self.config.stt_model}, analysis_model={self.config.model}, "
-            f"chunk={self.config.chunk_seconds}s, max_concurrency={self.config.max_concurrency}"
+            f"chunk={self.config.chunk_seconds}s, max_concurrency={self.config.max_concurrency}, "
+            f"api_base_url={(self.config.api_base_url or 'default_openai')}"
         )
         self._stage_processor = InsightStageProcessor(
             session_dir=self.session_dir,

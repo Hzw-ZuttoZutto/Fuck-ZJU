@@ -26,6 +26,7 @@ class SimulatorCliTests(unittest.TestCase):
         self.assertEqual(args.rt_model, "gpt-5-mini")
         self.assertEqual(args.rt_stt_model, "gpt-4o-mini-transcribe")
         self.assertEqual(args.rt_keywords_file, "config/realtime_keywords.json")
+        self.assertEqual(args.rt_api_base_url, "")
         self.assertEqual(args.rt_request_timeout_sec, 12.0)
         self.assertEqual(args.rt_stage_timeout_sec, 60.0)
         self.assertEqual(args.rt_retry_count, 2)
@@ -56,6 +57,8 @@ class SimulatorCliTests(unittest.TestCase):
                 "gpt-4o-mini-transcribe",
                 "--rt-keywords-file",
                 "/tmp/k.json",
+                "--rt-api-base-url",
+                "https://aihubmix.com/v1",
                 "--rt-request-timeout-sec",
                 "8",
                 "--rt-stage-timeout-sec",
@@ -73,6 +76,7 @@ class SimulatorCliTests(unittest.TestCase):
         self.assertEqual(args.chunk_seconds, 12)
         self.assertEqual(args.precompute_workers, 6)
         self.assertEqual(args.rt_keywords_file, "/tmp/k.json")
+        self.assertEqual(args.rt_api_base_url, "https://aihubmix.com/v1")
         self.assertEqual(args.rt_request_timeout_sec, 8.0)
         self.assertEqual(args.rt_stage_timeout_sec, 40.0)
         self.assertEqual(args.rt_retry_count, 1)
