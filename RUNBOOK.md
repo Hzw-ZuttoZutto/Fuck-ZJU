@@ -231,7 +231,8 @@ python -m src.main simulate \
 
 - 模式2/3会在仿真启动前全量预计算：缓存命中直接加载，未命中补算并写入缓存。
 - 模式3历史可见性支持18位串控制：右侧最低位对应 `seq-1`，左侧最高位对应 `seq-18`。
-- 模式4/5强制禁用缓存命中，输出串行+并行统计（`avg/p95/max/min`）。
+- 模式4为 STT 基准测试：每次样本都直接请求 STT API，不用本地 STT 缓存替代。
+- 模式5为分析基准测试：分析阶段不读取 analysis 缓存；分析前统一转写阶段允许命中 STT 缓存，缺失时补算并写回。
 - 仿真输出目录会产出：
   - `realtime_transcripts.jsonl`
   - `realtime_insights.jsonl`

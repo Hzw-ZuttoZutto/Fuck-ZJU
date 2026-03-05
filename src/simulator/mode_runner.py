@@ -110,9 +110,12 @@ def run_mode(
             raise RuntimeError("mode5 requires OpenAI client")
         report = _run_mode5_benchmark(
             chunk_paths=chunk_paths,
+            cache_store=cache_store,
             client=client,
             keywords=keywords,
+            stt_model=stt_model,
             analysis_model=analysis_model,
+            chunk_seconds=chunk_seconds,
             request_timeout_sec=request_timeout_sec,
             parallel_workers=max(1, int(scenario.benchmark.parallel_workers or precompute_workers)),
             repeats=max(1, int(scenario.benchmark.repeats)),
@@ -375,21 +378,28 @@ def _run_mode4_benchmark(
 def _run_mode5_benchmark(
     *,
     chunk_paths: list[Path],
+    cache_store: SimulationCacheStore,
     client: OpenAIInsightClient,
     keywords: KeywordConfig,
+    stt_model: str,
     analysis_model: str,
+    chunk_seconds: int,
     request_timeout_sec: float,
     parallel_workers: int,
     repeats: int,
     log_fn: Callable[[str], None],
 ) -> dict:
-    samples: list[tuple[str, str]] = []
-    history: list[str] = []
-    for seq, _chunk in enumerate(chunk_paths, start=1):
-        current = f"第{seq}个10秒块模拟文本，包含课堂信息与术语。"
-        context = "\n".join(history[-18:]) if history else "无历史文本块"
-        samples.append((current, context))
-        history.append(f"[seq={seq}] {current}")
+    transcripts, transcript_prep = _prepare_mode5_transcripts(
+        chunk_paths=chunk_paths,
+        cache_store=cache_store,
+        client=client,
+        keywords=keywords,
+        stt_model=stt_model,
+        analysis_model=analysis_model,
+        chunk_seconds=chunk_seconds,
+        request_timeout_sec=request_timeout_sec,
+    )
+    samples = _build_mode5_samples(transcripts)
 
     errors: list[str] = []
     analysis_samples: list[dict] = []
@@ -444,6 +454,7 @@ def _run_mode5_benchmark(
         "serial": _summarize_samples(serial_samples),
         "parallel": _summarize_samples(parallel_samples),
         "errors": _summarize_error_messages(errors),
+        "transcript_prep": transcript_prep,
         "analysis_samples": analysis_samples,
     }
     log_fn(
@@ -451,6 +462,79 @@ def _run_mode5_benchmark(
         f"serial_avg={report['serial']['avg_sec']:.3f}s parallel_avg={report['parallel']['avg_sec']:.3f}s"
     )
     return report
+
+
+def _prepare_mode5_transcripts(
+    *,
+    chunk_paths: list[Path],
+    cache_store: SimulationCacheStore,
+    client: OpenAIInsightClient,
+    keywords: KeywordConfig,
+    stt_model: str,
+    analysis_model: str,
+    chunk_seconds: int,
+    request_timeout_sec: float,
+) -> tuple[list[str], dict]:
+    keyword_hash = keywords_hash(keywords)
+    timeout_sec = max(1.0, float(request_timeout_sec))
+    transcripts: list[str] = []
+    prep = {
+        "chunk_count": len(chunk_paths),
+        "cache_hits": 0,
+        "cache_misses": 0,
+        "api_calls": 0,
+    }
+
+    for seq, chunk_path in enumerate(chunk_paths, start=1):
+        chunk_sha = file_sha256(chunk_path)
+        key = cache_store.stt_key(
+            chunk_sha256=chunk_sha,
+            stt_model=stt_model,
+            analysis_model=analysis_model,
+            keywords_hash_value=keyword_hash,
+            chunk_seconds=chunk_seconds,
+        )
+        cached_text = cache_store.load_stt(key)
+        if cached_text:
+            prep["cache_hits"] += 1
+            transcripts.append(cached_text)
+            continue
+
+        prep["cache_misses"] += 1
+        prep["api_calls"] += 1
+        try:
+            transcript = client.transcribe_chunk(
+                chunk_path=chunk_path,
+                stt_model=stt_model,
+                timeout_sec=timeout_sec,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"mode5 transcript prepare failed seq={seq} chunk={chunk_path.name}: {exc}"
+            ) from exc
+
+        text = (transcript or "").strip()
+        if not text:
+            raise RuntimeError(
+                f"mode5 transcript prepare failed seq={seq} chunk={chunk_path.name}: empty transcript"
+            )
+        cache_store.store_stt(key, text=text)
+        transcripts.append(text)
+
+    return transcripts, prep
+
+
+def _build_mode5_samples(transcripts: list[str]) -> list[tuple[str, str]]:
+    samples: list[tuple[str, str]] = []
+    history: list[str] = []
+    for seq, current_text in enumerate(transcripts, start=1):
+        text = (current_text or "").strip()
+        if not text:
+            raise RuntimeError(f"mode5 transcript prepare produced empty transcript seq={seq}")
+        context = "\n".join(history[-18:]) if history else "无历史文本块"
+        samples.append((text, context))
+        history.append(f"[seq={seq}] {text}")
+    return samples
 
 
 def _benchmark_serial(tasks: list[Callable[[], object]]) -> list[tuple[bool, float]]:

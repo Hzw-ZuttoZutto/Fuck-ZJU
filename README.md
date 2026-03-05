@@ -138,7 +138,8 @@ python -m src.main simulate \
 - 场景文件格式为 YAML，目录按模式组织：`tests/simulator/scenarios/mode1..mode5/`。
 - 模式2/3会在仿真启动前执行全量预计算：缓存命中直接复用，未命中补算并写入 `tests/simulator/cache/{stt,analysis}`。
 - 模式3支持 18 位历史可见性串控制：右侧最低位对应 `seq-1`，左侧最高位对应 `seq-18`。
-- 模式4/5为基准测试模式，强制禁用缓存命中，输出串行+并行统计（avg/p95/max/min）。
+- 模式4为 STT 基准测试：每次样本都直接请求 STT API，不用本地 STT 缓存替代。
+- 模式5为分析基准测试：分析阶段不读取 analysis 缓存；分析前统一转写阶段允许命中 STT 缓存，缺失时补算并写回。
 - 仿真运行产物位于 `tests/simulator/runs/<scenario>_modeX_<ts>/`，核心文件：
   - `realtime_transcripts.jsonl`
   - `realtime_insights.jsonl`
