@@ -117,5 +117,85 @@ def build_parser() -> argparse.ArgumentParser:
         default=10.0,
         help="Gap recovery window before marking missing interval",
     )
+    watch.add_argument(
+        "--rt-insight-enabled",
+        action="store_true",
+        help="Enable realtime key information extraction from teacher audio",
+    )
+    watch.add_argument(
+        "--rt-chunk-seconds",
+        type=int,
+        default=10,
+        help="Audio chunk duration in seconds for realtime insight",
+    )
+    watch.add_argument(
+        "--rt-context-window-seconds",
+        type=int,
+        default=180,
+        help="Historical summary context window in seconds for realtime insight",
+    )
+    watch.add_argument(
+        "--rt-model",
+        default="gpt-5-mini",
+        help="OpenAI text model for realtime insight analysis",
+    )
+    watch.add_argument(
+        "--rt-stt-model",
+        default="gpt-4o-mini-transcribe",
+        help="OpenAI speech-to-text model for realtime insight",
+    )
+    watch.add_argument(
+        "--rt-keywords-file",
+        default="config/realtime_keywords.json",
+        help="Keyword configuration file path for realtime insight",
+    )
+    watch.add_argument(
+        "--rt-request-timeout-sec",
+        type=float,
+        default=12.0,
+        help="Per-request timeout seconds for realtime insight model call",
+    )
+    watch.add_argument(
+        "--rt-retry-count",
+        type=int,
+        default=2,
+        help="Retry count when realtime insight model call fails",
+    )
+    watch.add_argument(
+        "--rt-alert-threshold",
+        type=int,
+        default=90,
+        help="Urgency threshold for [ALERT] console output",
+    )
+    watch.add_argument(
+        "--rt-max-concurrency",
+        type=int,
+        default=5,
+        help="Maximum concurrent async workers for realtime insight pipeline",
+    )
+    watch.add_argument(
+        "--rt-stage-timeout-sec",
+        type=float,
+        default=60.0,
+        help="Max seconds for each stage (STT or analysis) before dropping chunk",
+    )
+    watch.add_argument(
+        "--rt-context-min-ready",
+        type=int,
+        default=15,
+        help="Minimum ready transcript chunks before strict context gate is considered met",
+    )
+    watch.add_argument(
+        "--rt-context-recent-required",
+        type=int,
+        default=4,
+        help="Required most-recent transcript chunks that must be present for context gate",
+    )
+    watch.add_argument(
+        "--rt-context-wait-timeout-sec",
+        type=float,
+        default=15.0,
+        help="Max seconds waiting for context gate; timeout falls back to partial context",
+    )
 
     return parser

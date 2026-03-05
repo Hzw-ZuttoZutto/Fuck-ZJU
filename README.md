@@ -19,6 +19,9 @@ python -m src.main <subcommand> ...
 ## 快速开始
 
 ```bash
+# 安装依赖（realtime insight 需要 openai sdk）
+pip install -r requirements.txt
+
 # 凭据文件（推荐，避免在命令行暴露密码）
 cat > .account <<'EOF'
 USERNAME=你的统一认证账号
@@ -53,6 +56,23 @@ python -m src.main watch \
   --record-segment-minutes 10 \
   --record-startup-av-timeout 15 \
   --record-recovery-window-sec 10
+
+# 启动直播代理 + 录制 + 实时关键信息提取（10s 音频增量）
+OPENAI_API_KEY=你的key python -m src.main watch \
+  --course-id 83650 \
+  --sub-id <sub_id> \
+  --record-dir ./records \
+  --rt-insight-enabled \
+  --rt-stt-model gpt-4o-mini-transcribe \
+  --rt-model gpt-5-mini \
+  --rt-chunk-seconds 10 \
+  --rt-context-window-seconds 180 \
+  --rt-max-concurrency 5 \
+  --rt-stage-timeout-sec 60 \
+  --rt-context-min-ready 15 \
+  --rt-context-recent-required 4 \
+  --rt-context-wait-timeout-sec 15 \
+  --rt-keywords-file config/realtime_keywords.json
 ```
 
 凭据规则：
@@ -66,6 +86,16 @@ python -m src.main watch \
 - 每段 `mp3`：`课程名_老师名_开始时间_结束时间.mp3`
 - 每段缺失日志：`课程名_老师名_开始时间_结束时间.missing.json`
 - 会话汇总：`recording_session_report.json`
+- 实时转写日志：`realtime_transcripts.jsonl`
+- 实时结构化日志：`realtime_insights.jsonl`
+- 实时中文镜像日志：`realtime_insights.log`
+
+实时提取说明：
+
+- 必须设置 `OPENAI_API_KEY`。
+- 关键词默认文件：`config/realtime_keywords.json`。
+- 实时流程为两阶段：`10s音频 -> STT转写 -> 文本上下文分析`。
+- 紧急度为二分类：重要=95%，非重要或失败降级=10%。
 
 本地浏览器观看（本地执行）：
 

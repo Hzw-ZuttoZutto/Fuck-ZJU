@@ -19,6 +19,7 @@ from src.common.account import resolve_credentials
 from src.common.constants import HLS_JS_CANDIDATE_URLS
 from src.common.course_meta import fetch_course_meta
 from src.common.http import create_session
+from src.live.insight import RealtimeInsightConfig, RealtimeInsightService
 from src.live.joiner import JoinRoomClient
 from src.live.poller import StreamPoller
 from src.live.proxy import ProxyEngine
@@ -219,6 +220,7 @@ def run_watch(args: argparse.Namespace) -> int:
     )
     poller.start()
     recorder: LiveRecorderService | None = None
+    insight_service: RealtimeInsightService | None = None
     server: ThreadingHTTPServer | None = None
     try:
         watch_started_at = datetime.now().astimezone()
@@ -255,6 +257,39 @@ def run_watch(args: argparse.Namespace) -> int:
             f"output_dir={session_dir}"
         )
         recorder.start()
+        if args.rt_insight_enabled:
+            keywords_file = Path(args.rt_keywords_file).expanduser().resolve()
+            chunk_seconds = max(2, int(args.rt_chunk_seconds))
+            context_target_chunks = max(1, int(args.rt_context_window_seconds) // max(1, chunk_seconds))
+            insight_config = RealtimeInsightConfig(
+                enabled=True,
+                chunk_seconds=chunk_seconds,
+                context_window_seconds=max(30, int(args.rt_context_window_seconds)),
+                model=(args.rt_model or "").strip() or "gpt-5-mini",
+                stt_model=(args.rt_stt_model or "").strip() or "gpt-4o-mini-transcribe",
+                keywords_file=keywords_file,
+                request_timeout_sec=max(2.0, float(args.rt_request_timeout_sec)),
+                retry_count=max(0, int(args.rt_retry_count)),
+                alert_threshold=max(0, min(100, int(args.rt_alert_threshold))),
+                max_concurrency=max(1, int(args.rt_max_concurrency)),
+                stage_timeout_sec=max(1.0, float(args.rt_stage_timeout_sec)),
+                context_min_ready=max(0, int(args.rt_context_min_ready)),
+                context_recent_required=max(0, int(args.rt_context_recent_required)),
+                context_wait_timeout_sec=max(0.1, float(args.rt_context_wait_timeout_sec)),
+                context_target_chunks=max(1, context_target_chunks),
+            )
+            insight_service = RealtimeInsightService(
+                poller=poller,
+                session_dir=session_dir,
+                config=insight_config,
+            )
+            print(
+                "Realtime insight enabled: "
+                f"stt_model={insight_config.stt_model}, analysis_model={insight_config.model}, "
+                f"chunk={insight_config.chunk_seconds}s, context_chunks={insight_config.context_target_chunks}, "
+                f"workers={insight_config.max_concurrency}, keywords={keywords_file}"
+            )
+            insight_service.start()
 
         proxy_engine = ProxyEngine(
             session=create_session(pool_size=64),
@@ -312,6 +347,8 @@ def run_watch(args: argparse.Namespace) -> int:
     finally:
         if server is not None:
             server.server_close()
+        if insight_service is not None:
+            insight_service.stop()
         if recorder is not None:
             recorder.stop()
         poller.stop()

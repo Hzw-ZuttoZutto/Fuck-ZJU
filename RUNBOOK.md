@@ -123,6 +123,30 @@ python -m src.main watch \
   --no-browser
 ```
 
+开启实时关键信息提取（可选）：
+
+```bash
+OPENAI_API_KEY=你的key python -m src.main watch \
+  --course-id 83650 \
+  --sub-id 1895397 \
+  --record-dir ./records \
+  --rt-insight-enabled \
+  --rt-stt-model gpt-4o-mini-transcribe \
+  --rt-model gpt-5-mini \
+  --rt-chunk-seconds 10 \
+  --rt-context-window-seconds 180 \
+  --rt-keywords-file config/realtime_keywords.json \
+  --rt-request-timeout-sec 12 \
+  --rt-retry-count 2 \
+  --rt-alert-threshold 90 \
+  --rt-max-concurrency 5 \
+  --rt-stage-timeout-sec 60 \
+  --rt-context-min-ready 15 \
+  --rt-context-recent-required 4 \
+  --rt-context-wait-timeout-sec 15 \
+  --no-browser
+```
+
 注意：
 
 - `--sub-id` 必填；缺失时无法正确拉流。
@@ -148,6 +172,11 @@ python -m src.main watch \
 - 分片命名：`课程名_老师名_开始时间_结束时间.mp4/.mp3`
 - 缺失区间日志：每分片 `*.missing.json`，全局 `recording_session_report.json`
 - `--record-segment-minutes 0` 表示整场只输出一个分片，直到手动终止。
+- 实时转写日志：`realtime_transcripts.jsonl`
+- 实时结构化日志：`realtime_insights.jsonl`
+- 实时中文镜像日志：`realtime_insights.log`
+- 实时音频切片目录：`_rt_chunks/`
+- 实时流程：`10s音频 -> STT转写 -> 文本上下文分析`
 
 ### 4.3 本地浏览器访问（SSH 转发）
 在本地机器执行：
@@ -238,6 +267,22 @@ ssh clusters -L 8765:127.0.0.1:8765
 - 检查本机 `ffmpeg -version` / `ffprobe -version`
 - 检查课程 `course_id` 是否正确
 - 适当增大 `--record-startup-av-timeout`（例如 20）
+
+### 6.8 realtime insight 未生效
+可能原因：
+
+- 未传 `--rt-insight-enabled`
+- 未设置 `OPENAI_API_KEY`
+- `openai` SDK 未安装
+- `ffmpeg` 不在 PATH
+- `--rt-stt-model` 或 `--rt-model` 对当前账号不可用
+
+处理：
+
+- `pip install -r requirements.txt`
+- `echo $OPENAI_API_KEY` 确认变量存在
+- 检查启动日志是否有 `[rt-insight]` 错误提示
+- 改用可用模型：`--rt-stt-model <stt_model>` / `--rt-model <analysis_model>`
 
 ### 6.5 `Address already in use`
 原因：端口被占用。

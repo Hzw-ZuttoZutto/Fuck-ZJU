@@ -30,6 +30,20 @@ def _watch_args() -> argparse.Namespace:
         record_segment_minutes=10,
         record_startup_av_timeout=1.0,
         record_recovery_window_sec=10.0,
+        rt_insight_enabled=False,
+        rt_chunk_seconds=10,
+        rt_context_window_seconds=180,
+        rt_model="gpt-5-mini",
+        rt_stt_model="gpt-4o-mini-transcribe",
+        rt_keywords_file="config/realtime_keywords.json",
+        rt_request_timeout_sec=12.0,
+        rt_retry_count=2,
+        rt_alert_threshold=90,
+        rt_max_concurrency=5,
+        rt_stage_timeout_sec=60.0,
+        rt_context_min_ready=15,
+        rt_context_recent_required=4,
+        rt_context_wait_timeout_sec=15.0,
     )
 
 
@@ -97,6 +111,21 @@ class _FakeServer:
         self.closed = True
 
 
+class _FakeInsightService:
+    instances = []
+
+    def __init__(self, **kwargs) -> None:
+        self.started = False
+        self.stopped = False
+        _FakeInsightService.instances.append(self)
+
+    def start(self) -> None:
+        self.started = True
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
 class WatchRecordingTests(unittest.TestCase):
     def test_watch_fails_when_course_meta_missing(self) -> None:
         args = _watch_args()
@@ -130,8 +159,10 @@ class WatchRecordingTests(unittest.TestCase):
 
     def test_watch_stops_recorder_with_server(self) -> None:
         args = _watch_args()
+        args.rt_insight_enabled = True
         _FakeRecorder.instances.clear()
         _FakeRecorder.startup_ok = True
+        _FakeInsightService.instances.clear()
 
         with (
             mock.patch("src.live.server.ZJUAuthClient.login_and_get_token", return_value="tok"),
@@ -142,6 +173,7 @@ class WatchRecordingTests(unittest.TestCase):
             mock.patch("src.live.server.JoinRoomClient.try_join", return_value=_JoinResult()),
             mock.patch("src.live.server.StreamPoller", _FakePoller),
             mock.patch("src.live.server.LiveRecorderService", _FakeRecorder),
+            mock.patch("src.live.server.RealtimeInsightService", _FakeInsightService),
             mock.patch("src.live.server.ProxyEngine"),
             mock.patch("src.live.server.prepare_hls_js", return_value=""),
             mock.patch("src.live.server.ThreadingHTTPServer", _FakeServer),
@@ -152,6 +184,8 @@ class WatchRecordingTests(unittest.TestCase):
         self.assertTrue(_FakePoller.instance.stopped)
         self.assertTrue(_FakeRecorder.instances[0].started)
         self.assertTrue(_FakeRecorder.instances[0].stopped)
+        self.assertTrue(_FakeInsightService.instances[0].started)
+        self.assertTrue(_FakeInsightService.instances[0].stopped)
         self.assertTrue(_FakeServer.instance.closed)
 
 

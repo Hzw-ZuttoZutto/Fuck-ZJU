@@ -66,6 +66,20 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(args.record_recovery_window_sec, 10.0)
         self.assertEqual(args.username, "")
         self.assertEqual(args.password, "")
+        self.assertFalse(args.rt_insight_enabled)
+        self.assertEqual(args.rt_chunk_seconds, 10)
+        self.assertEqual(args.rt_context_window_seconds, 180)
+        self.assertEqual(args.rt_model, "gpt-5-mini")
+        self.assertEqual(args.rt_stt_model, "gpt-4o-mini-transcribe")
+        self.assertEqual(args.rt_keywords_file, "config/realtime_keywords.json")
+        self.assertEqual(args.rt_request_timeout_sec, 12.0)
+        self.assertEqual(args.rt_retry_count, 2)
+        self.assertEqual(args.rt_alert_threshold, 90)
+        self.assertEqual(args.rt_max_concurrency, 5)
+        self.assertEqual(args.rt_stage_timeout_sec, 60.0)
+        self.assertEqual(args.rt_context_min_ready, 15)
+        self.assertEqual(args.rt_context_recent_required, 4)
+        self.assertEqual(args.rt_context_wait_timeout_sec, 15.0)
 
     def test_watch_record_args_custom(self) -> None:
         parser = build_parser()
@@ -88,12 +102,53 @@ class CliParserTests(unittest.TestCase):
                 "20",
                 "--record-recovery-window-sec",
                 "7",
+                "--rt-insight-enabled",
+                "--rt-chunk-seconds",
+                "12",
+                "--rt-context-window-seconds",
+                "240",
+                "--rt-model",
+                "gpt-5-mini",
+                "--rt-stt-model",
+                "gpt-4o-mini-transcribe",
+                "--rt-keywords-file",
+                "/tmp/k.json",
+                "--rt-request-timeout-sec",
+                "8",
+                "--rt-retry-count",
+                "4",
+                "--rt-alert-threshold",
+                "88",
+                "--rt-max-concurrency",
+                "3",
+                "--rt-stage-timeout-sec",
+                "45",
+                "--rt-context-min-ready",
+                "10",
+                "--rt-context-recent-required",
+                "3",
+                "--rt-context-wait-timeout-sec",
+                "9",
             ]
         )
         self.assertEqual(args.record_dir, "/tmp/r")
         self.assertEqual(args.record_segment_minutes, 0)
         self.assertEqual(args.record_startup_av_timeout, 20.0)
         self.assertEqual(args.record_recovery_window_sec, 7.0)
+        self.assertTrue(args.rt_insight_enabled)
+        self.assertEqual(args.rt_chunk_seconds, 12)
+        self.assertEqual(args.rt_context_window_seconds, 240)
+        self.assertEqual(args.rt_model, "gpt-5-mini")
+        self.assertEqual(args.rt_stt_model, "gpt-4o-mini-transcribe")
+        self.assertEqual(args.rt_keywords_file, "/tmp/k.json")
+        self.assertEqual(args.rt_request_timeout_sec, 8.0)
+        self.assertEqual(args.rt_retry_count, 4)
+        self.assertEqual(args.rt_alert_threshold, 88)
+        self.assertEqual(args.rt_max_concurrency, 3)
+        self.assertEqual(args.rt_stage_timeout_sec, 45.0)
+        self.assertEqual(args.rt_context_min_ready, 10)
+        self.assertEqual(args.rt_context_recent_required, 3)
+        self.assertEqual(args.rt_context_wait_timeout_sec, 9.0)
 
 
 if __name__ == "__main__":
