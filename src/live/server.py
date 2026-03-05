@@ -1,0 +1,250 @@
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+import urllib.parse
+import webbrowser
+from dataclasses import asdict
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import requests
+
+from src.auth.cas_client import ZJUAuthClient
+from src.common.constants import HLS_JS_CANDIDATE_URLS
+from src.common.http import create_session
+from src.live.joiner import JoinRoomClient
+from src.live.poller import StreamPoller
+from src.live.proxy import ProxyEngine
+from src.live.templates import render_index_html, render_player_html
+
+
+def prepare_hls_js(timeout: int) -> str:
+    for url in HLS_JS_CANDIDATE_URLS:
+        try:
+            resp = requests.get(url, timeout=timeout)
+            resp.raise_for_status()
+            text = resp.text
+            if "class Hls" in text or "function Hls" in text or "var Hls" in text:
+                return text
+        except requests.RequestException:
+            continue
+    return ""
+
+
+class WatchRequestHandler(BaseHTTPRequestHandler):
+    poller: StreamPoller
+    proxy_engine: ProxyEngine
+    course_id: int
+    sub_id: int
+    poll_interval: float
+    hls_js: str
+    hls_max_buffer: int
+
+    def do_GET(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        q = urllib.parse.parse_qs(parsed.query)
+
+        if path == "/":
+            return self._write_html(
+                render_index_html(self.course_id, self.sub_id, self.poll_interval)
+            )
+
+        if path == "/player":
+            role = (q.get("role", ["teacher"])[0] or "teacher").strip().lower()
+            if role not in {"teacher", "ppt"}:
+                role = "teacher"
+            return self._write_html(render_player_html(role, self.hls_max_buffer))
+
+        if path == "/static/hls.min.js":
+            if not self.hls_js:
+                return self.send_error(HTTPStatus.SERVICE_UNAVAILABLE, "hls.js unavailable")
+            return self._write_js(self.hls_js)
+
+        if path == "/api/streams":
+            snap = self.poller.get_snapshot()
+            return self._write_json(snap.to_json_dict())
+
+        if path == "/api/stream":
+            role = (q.get("role", ["teacher"])[0] or "teacher").strip().lower()
+            if role not in {"teacher", "ppt"}:
+                role = "teacher"
+            snap = self.poller.get_snapshot()
+            stream = snap.streams.get(role)
+            return self._write_json(
+                {
+                    "role": role,
+                    "updated_at_utc": snap.updated_at_utc,
+                    "success": snap.success,
+                    "result_err": snap.result_err,
+                    "result_err_msg": snap.result_err_msg,
+                    "active_provider": snap.active_provider,
+                    "provider_diagnostics": snap.provider_diagnostics,
+                    "error": snap.error,
+                    "stream": asdict(stream) if stream else None,
+                }
+            )
+
+        if path == "/api/metrics":
+            return self._write_json(
+                {
+                    "poller": self.poller.get_metrics(),
+                    "proxy": self.proxy_engine.get_metrics(),
+                }
+            )
+
+        if path == "/proxy/m3u8":
+            role = (q.get("role", ["teacher"])[0] or "teacher").strip().lower()
+            if role not in {"teacher", "ppt"}:
+                role = "teacher"
+            snap = self.poller.get_snapshot()
+            stream = snap.streams.get(role)
+            return self.proxy_engine.proxy_playlist(self, role=role, stream=stream)
+
+        if path == "/proxy/asset":
+            upstream = (q.get("u", [""])[0] or "").strip()
+            return self.proxy_engine.proxy_asset(self, upstream)
+
+        self.send_error(HTTPStatus.NOT_FOUND)
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        return
+
+    def _write_html(self, content: str) -> None:
+        body = content.encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _write_json(self, payload: dict) -> None:
+        body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _write_js(self, text: str) -> None:
+        body = text.encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/javascript; charset=utf-8")
+        self.send_header("Cache-Control", "public, max-age=3600")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def run_watch(args: argparse.Namespace) -> int:
+    auth = ZJUAuthClient(timeout=args.timeout, tenant_code=args.tenant_code)
+    login_session = create_session(pool_size=8)
+
+    try:
+        token = auth.login_and_get_token(
+            session=login_session,
+            username=args.username,
+            password=args.password,
+            center_course_id=args.course_id,
+            authcode=args.authcode,
+        )
+    except Exception as exc:
+        print(f"Login failed: {exc}", file=sys.stderr)
+        return 1
+
+    if not token:
+        print("Login succeeded but token is empty; watch mode cannot continue.", file=sys.stderr)
+        return 1
+
+    join_result = JoinRoomClient(
+        session=create_session(pool_size=8),
+        token=token,
+        timeout=args.timeout,
+        sub_id=args.sub_id,
+        user_id=args.username,
+        realname=args.username,
+    ).try_join()
+    if join_result.attempted:
+        if join_result.success:
+            print(f"Join room ok (stream_id={join_result.stream_id}).")
+        else:
+            print(
+                f"Warning: join room failed ({join_result.message}). "
+                "Playback may still work if upstream stream is public.",
+                file=sys.stderr,
+            )
+
+    poller = StreamPoller(
+        session=create_session(pool_size=32),
+        token=token,
+        timeout=args.timeout,
+        course_id=args.course_id,
+        sub_id=args.sub_id,
+        poll_interval=args.poll_interval,
+        tenant_code=args.tenant_code,
+    )
+    poller.start()
+
+    proxy_engine = ProxyEngine(
+        session=create_session(pool_size=64),
+        upstream_timeout=args.timeout,
+        playlist_retries=args.playlist_retries,
+        asset_retries=args.asset_retries,
+        stale_playlist_grace=args.stale_playlist_grace,
+    )
+
+    hls_js = prepare_hls_js(timeout=args.timeout)
+    if not hls_js:
+        print(
+            "Warning: failed to preload hls.js. "
+            "Chrome/Edge may not play HLS unless native support is available.",
+            file=sys.stderr,
+        )
+
+    handler_cls = type(
+        "WatchHandler",
+        (WatchRequestHandler,),
+        {
+            "poller": poller,
+            "proxy_engine": proxy_engine,
+            "course_id": args.course_id,
+            "sub_id": args.sub_id,
+            "poll_interval": max(3.0, args.poll_interval),
+            "hls_js": hls_js,
+            "hls_max_buffer": args.hls_max_buffer,
+        },
+    )
+
+    server = ThreadingHTTPServer((args.host, args.port), handler_cls)
+    base_url = f"http://{args.host}:{args.port}"
+    open_base_url = args.open_base_url.strip() if args.open_base_url else base_url
+
+    print(f"Watch server started at: {base_url}")
+    print(f"Teacher player: {open_base_url}/player?role=teacher")
+    print(f"PPT player:     {open_base_url}/player?role=ppt")
+    print(f"Metrics API:    {open_base_url}/api/metrics")
+    print("Press Ctrl+C to stop.")
+
+    if not args.no_browser:
+        try:
+            webbrowser.open(f"{open_base_url}/player?role=teacher")
+            time.sleep(0.15)
+            webbrowser.open(f"{open_base_url}/player?role=ppt")
+            webbrowser.open(open_base_url)
+        except Exception as exc:
+            print(f"Open browser failed: {exc}", file=sys.stderr)
+
+    try:
+        server.serve_forever(poll_interval=0.5)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+        poller.stop()
+
+    return 0
