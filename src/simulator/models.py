@@ -25,6 +25,24 @@ ALLOWED_MODE6_STT_STEP_TYPES = {"ok", "error", "timeout_request"}
 ALLOWED_MODE6_ANALYSIS_STEP_TYPES = {"ok", "error", "timeout_request"}
 ALLOWED_MODE6_CONTEXT_REASONS = {"full18_ready", "timeout_wait_full18", "timeout_wait_recent4"}
 ALLOWED_MODE6_ANALYSIS_STATUSES = {"ok", "analysis_drop_timeout", "analysis_drop_error"}
+ALLOWED_MODE1_RUNNERS = {"online", "scripted"}
+ALLOWED_MODE1_SEQ_STRATEGIES = {"source_seq", "emit_seq"}
+ALLOWED_MODE1_SCRIPT_STEP_TYPES = {"ok", "error", "timeout_request"}
+ALLOWED_MODE1_REQUIRED_BRANCHES = {
+    "transcript.ok",
+    "transcript.drop_timeout",
+    "transcript.drop_error",
+    "analysis.ok",
+    "analysis.drop_timeout",
+    "analysis.drop_error",
+    "context.full18_ready",
+    "context.timeout_wait_full18",
+    "context.timeout_wait_recent4",
+    "recovery.true",
+    "recovery.false",
+    "retry.stt_gt1",
+    "retry.analysis_gt1",
+}
 
 
 @dataclass
@@ -151,6 +169,48 @@ class Mode2ValidationConfig:
 
 
 @dataclass
+class Mode1ScriptStep:
+    type: str = "ok"
+    text: str = ""
+    error: str = ""
+    delay_sec: float = 0.0
+    result: dict = field(default_factory=dict)
+
+    def normalized_type(self) -> str:
+        text = (self.type or "ok").strip().lower()
+        return text if text in ALLOWED_MODE1_SCRIPT_STEP_TYPES else "ok"
+
+
+@dataclass
+class Mode1SeqScript:
+    seq: int
+    stt_script: list[Mode1ScriptStep] = field(default_factory=list)
+    analysis_script: list[Mode1ScriptStep] = field(default_factory=list)
+
+
+@dataclass
+class Mode1ValidationConfig:
+    strict_fail: bool = True
+    required_branches: list[str] = field(default_factory=list)
+
+
+@dataclass
+class Mode1Config:
+    runner: str = "online"
+    seq_strategy: str = "source_seq"
+    validation: Mode1ValidationConfig = field(default_factory=Mode1ValidationConfig)
+    scripts: list[Mode1SeqScript] = field(default_factory=list)
+
+    _script_by_seq: dict[int, Mode1SeqScript] = field(init=False, default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self._script_by_seq = {item.seq: item for item in self.scripts}
+
+    def script_for(self, seq: int) -> Mode1SeqScript | None:
+        return self._script_by_seq.get(seq)
+
+
+@dataclass
 class Mode6CaseConfig:
     request_timeout_sec: float | None = None
     stage_timeout_sec: float | None = None
@@ -237,6 +297,7 @@ class Mode6Config:
 class Scenario:
     mode: SimulatorMode
     name: str
+    mode1: Mode1Config = field(default_factory=Mode1Config)
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
     feed: FeedConfig = field(default_factory=FeedConfig)
     translation_rules: list[StageControlRule] = field(default_factory=list)
@@ -281,9 +342,17 @@ class SimulateRuntimeConfig:
     rt_stt_model: str
     rt_keywords_file: Path
     rt_api_base_url: str
-    rt_request_timeout_sec: float
-    rt_stage_timeout_sec: float
-    rt_retry_count: int
+    rt_stt_request_timeout_sec: float
+    rt_stt_stage_timeout_sec: float
+    rt_stt_retry_count: int
+    rt_stt_retry_interval_sec: float
+    rt_analysis_request_timeout_sec: float
+    rt_analysis_stage_timeout_sec: float
+    rt_analysis_retry_count: int
+    rt_analysis_retry_interval_sec: float
+    rt_context_recent_required: int
+    rt_context_wait_timeout_sec_1: float
+    rt_context_wait_timeout_sec_2: float
     seed: int | None
     mode5_profile: str = DEFAULT_MODE5_PROFILE
     mode5_target_seq: int | None = None

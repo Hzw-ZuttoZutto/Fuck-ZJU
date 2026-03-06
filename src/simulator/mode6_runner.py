@@ -228,8 +228,8 @@ class _Mode6Processor(InsightStageProcessor):
             }
         )
 
-    def transcribe_with_retry(self, chunk_path: Path) -> tuple[str, str, int, str]:
-        text, status, attempts, error = super().transcribe_with_retry(chunk_path)
+    def transcribe_with_retry(self, chunk_path: Path) -> tuple[str, str, int, str, float]:
+        text, status, attempts, error, elapsed = super().transcribe_with_retry(chunk_path)
         self.last_stt_status = status
         self.last_stt_attempts = attempts
         self.trace_writer(
@@ -241,7 +241,7 @@ class _Mode6Processor(InsightStageProcessor):
                 "error": error,
             }
         )
-        return text, status, attempts, error
+        return text, status, attempts, error, elapsed
 
     def wait_and_collect_history(self, chunk_seq: int) -> list[TranscriptChunk]:
         self._context_start_mono = self.clock.monotonic()
@@ -269,7 +269,7 @@ class _Mode6Processor(InsightStageProcessor):
         *,
         current_text: str,
         context_text: str,
-    ) -> tuple[InsightModelResult | None, str, int, str]:
+    ) -> tuple[InsightModelResult | None, str, int, str, float]:
         started = self.clock.monotonic()
         self.trace_writer(
             {
@@ -278,7 +278,7 @@ class _Mode6Processor(InsightStageProcessor):
                 "at_sec": round(started, 6),
             }
         )
-        result, status, attempts, error = super().analyze_with_retry(
+        result, status, attempts, error, elapsed = super().analyze_with_retry(
             current_text=current_text,
             context_text=context_text,
         )
@@ -296,7 +296,7 @@ class _Mode6Processor(InsightStageProcessor):
                 "error": error,
             }
         )
-        return result, status, attempts, error
+        return result, status, attempts, error, elapsed
 
     @property
     def last_context_reason(self) -> str:
@@ -442,11 +442,17 @@ def _build_case_config(
 ) -> RealtimeInsightConfig:
     config = replace(base_config)
     if case.config.request_timeout_sec is not None:
-        config.request_timeout_sec = max(1.0, float(case.config.request_timeout_sec))
+        timeout = max(1.0, float(case.config.request_timeout_sec))
+        config.stt_request_timeout_sec = timeout
+        config.analysis_request_timeout_sec = timeout
     if case.config.stage_timeout_sec is not None:
-        config.stage_timeout_sec = max(1.0, float(case.config.stage_timeout_sec))
+        timeout = max(1.0, float(case.config.stage_timeout_sec))
+        config.stt_stage_timeout_sec = timeout
+        config.analysis_stage_timeout_sec = timeout
     if case.config.retry_count is not None:
-        config.retry_count = max(0, int(case.config.retry_count))
+        retry = max(0, int(case.config.retry_count))
+        config.stt_retry_count = retry
+        config.analysis_retry_count = retry
     if case.config.context_recent_required is not None:
         config.context_recent_required = max(0, int(case.config.context_recent_required))
     if case.config.context_target_chunks is not None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 
 from src.cli.parser import build_parser
+from src.live.mic import run_mic_list_devices, run_mic_listen, run_mic_publish
 from src.live.server import run_watch
 from src.scan.service import run_scan
 from src.simulator.service import run_simulate
@@ -14,6 +15,12 @@ def main() -> int:
         return run_scan(args)
     if args.command == "watch":
         return run_watch(args)
+    if args.command == "mic-listen":
+        return run_mic_listen(args)
+    if args.command == "mic-publish":
+        return run_mic_publish(args)
+    if args.command == "mic-list-devices":
+        return run_mic_list_devices(args)
     if args.command == "simulate":
         return run_simulate(args)
 

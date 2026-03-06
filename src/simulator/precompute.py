@@ -21,7 +21,8 @@ def run_precompute(
     stt_model: str,
     analysis_model: str,
     chunk_seconds: int,
-    request_timeout_sec: float,
+    stt_request_timeout_sec: float,
+    analysis_request_timeout_sec: float,
     workers: int,
     log_fn: Callable[[str], None] | None = None,
 ) -> dict:
@@ -69,7 +70,7 @@ def run_precompute(
 
             manifest["stt"]["misses"] += 1
             stt_futures[
-                executor.submit(_compute_stt, client, chunk, stt_model, request_timeout_sec)
+                executor.submit(_compute_stt, client, chunk, stt_model, stt_request_timeout_sec)
             ] = chunk
 
         for future in as_completed(stt_futures):
@@ -135,7 +136,7 @@ def run_precompute(
                 keywords=keywords,
                 current_text=text,
                 context_text=context_text,
-                timeout_sec=max(1.0, float(request_timeout_sec)),
+                timeout_sec=max(1.0, float(analysis_request_timeout_sec)),
             )
             cache_store.store_analysis(
                 key,
@@ -177,13 +178,13 @@ def _compute_stt(
     client: OpenAIInsightClient,
     chunk_path: Path,
     stt_model: str,
-    request_timeout_sec: float,
+    stt_request_timeout_sec: float,
 ) -> tuple[Path, str]:
     started = time.monotonic()
     text = client.transcribe_chunk(
         chunk_path=chunk_path,
         stt_model=stt_model,
-        timeout_sec=max(1.0, float(request_timeout_sec)),
+        timeout_sec=max(1.0, float(stt_request_timeout_sec)),
     )
     _ = time.monotonic() - started
     return chunk_path, text.strip()

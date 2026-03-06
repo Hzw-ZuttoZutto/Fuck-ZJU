@@ -9,6 +9,10 @@ from src.simulator.models import (
     ALLOWED_MODE6_ANALYSIS_STATUSES,
     ALLOWED_MODE6_ANALYSIS_STEP_TYPES,
     ALLOWED_MODE6_CONTEXT_REASONS,
+    ALLOWED_MODE1_REQUIRED_BRANCHES,
+    ALLOWED_MODE1_RUNNERS,
+    ALLOWED_MODE1_SCRIPT_STEP_TYPES,
+    ALLOWED_MODE1_SEQ_STRATEGIES,
     ALLOWED_MODE6_STT_STEP_TYPES,
     BenchmarkConfig,
     DatasetConfig,
@@ -17,6 +21,10 @@ from src.simulator.models import (
     FeedDelayBackfillRule,
     FeedDuplicateRule,
     HistoryRule,
+    Mode1Config,
+    Mode1ScriptStep,
+    Mode1SeqScript,
+    Mode1ValidationConfig,
     Mode2ValidationConfig,
     Mode2ValidationPrecompute,
     Mode2ValidationRun,
@@ -49,6 +57,7 @@ def load_scenario(path: Path, *, expected_mode: SimulatorMode | None = None) -> 
 
     dataset = _parse_dataset(payload.get("dataset"))
     feed = _parse_feed(payload.get("feed"))
+    mode1 = _parse_mode1(payload.get("mode1"), mode=mode)
     translation_rules, analysis_rules = _parse_controls(payload.get("control"))
     history_rules = _parse_history(payload.get("history"))
     mode2_validation = _parse_mode2_validation(payload.get("validation"), mode=mode)
@@ -73,6 +82,7 @@ def load_scenario(path: Path, *, expected_mode: SimulatorMode | None = None) -> 
     return Scenario(
         mode=mode,
         name=str(payload.get("name", path.stem) or path.stem),
+        mode1=mode1,
         dataset=dataset,
         feed=feed,
         translation_rules=translation_rules,
@@ -215,6 +225,94 @@ def _parse_history(payload: Any) -> list[HistoryRule]:
         hold_sec = max(0.0, float(item.get("hold_sec", 0.0)))
         out.append(HistoryRule(seq=seq, visibility=visibility, hold_sec=hold_sec))
     return out
+
+
+def _parse_mode1(payload: Any, *, mode: SimulatorMode) -> Mode1Config:
+    if mode != SimulatorMode.MODE1 or not isinstance(payload, dict):
+        return Mode1Config()
+
+    runner = str(payload.get("runner", "online") or "online").strip().lower()
+    if runner not in ALLOWED_MODE1_RUNNERS:
+        allowed = ",".join(sorted(ALLOWED_MODE1_RUNNERS))
+        raise ValueError(f"mode1.runner invalid: {runner}, allowed={allowed}")
+
+    seq_strategy = str(payload.get("seq_strategy", "source_seq") or "source_seq").strip().lower()
+    if seq_strategy not in ALLOWED_MODE1_SEQ_STRATEGIES:
+        allowed = ",".join(sorted(ALLOWED_MODE1_SEQ_STRATEGIES))
+        raise ValueError(f"mode1.seq_strategy invalid: {seq_strategy}, allowed={allowed}")
+
+    validation_payload = payload.get("validation") if isinstance(payload.get("validation"), dict) else {}
+    strict_fail_raw = _coerce_opt_bool(validation_payload.get("strict_fail"))
+    strict_fail = True if strict_fail_raw is None else bool(strict_fail_raw)
+    required_branches: list[str] = []
+    for idx, raw in enumerate(_coerce_list(validation_payload.get("required_branches")), start=1):
+        branch = str(raw or "").strip()
+        if not branch:
+            continue
+        if branch not in ALLOWED_MODE1_REQUIRED_BRANCHES:
+            allowed = ",".join(sorted(ALLOWED_MODE1_REQUIRED_BRANCHES))
+            raise ValueError(f"mode1.validation.required_branches[{idx}] invalid: {branch}, allowed={allowed}")
+        required_branches.append(branch)
+
+    scripts_payload = payload.get("scripts") if isinstance(payload.get("scripts"), dict) else {}
+    seq_scripts: list[Mode1SeqScript] = []
+    for idx, item in enumerate(_coerce_list(scripts_payload.get("by_seq")), start=1):
+        if not isinstance(item, dict):
+            continue
+        seq = int(item.get("seq", 0))
+        if seq <= 0:
+            raise ValueError(f"mode1.scripts.by_seq[{idx}] must provide seq >= 1")
+        stt_script = _parse_mode1_script_steps(
+            item.get("stt_script"),
+            path=f"mode1.scripts.by_seq[{idx}].stt_script",
+            default_step=Mode1ScriptStep(type="ok", text=f"scripted-stt-{seq}"),
+        )
+        analysis_script = _parse_mode1_script_steps(
+            item.get("analysis_script"),
+            path=f"mode1.scripts.by_seq[{idx}].analysis_script",
+            default_step=Mode1ScriptStep(
+                type="ok",
+                result={
+                    "important": False,
+                    "summary": f"scripted-analysis-{seq}",
+                    "context_summary": "scripted",
+                    "matched_terms": [],
+                    "reason": "scripted",
+                },
+            ),
+        )
+        seq_scripts.append(Mode1SeqScript(seq=seq, stt_script=stt_script, analysis_script=analysis_script))
+
+    return Mode1Config(
+        runner=runner,
+        seq_strategy=seq_strategy,
+        validation=Mode1ValidationConfig(strict_fail=strict_fail, required_branches=required_branches),
+        scripts=seq_scripts,
+    )
+
+
+def _parse_mode1_script_steps(payload: Any, *, path: str, default_step: Mode1ScriptStep) -> list[Mode1ScriptStep]:
+    steps: list[Mode1ScriptStep] = []
+    for idx, item in enumerate(_coerce_list(payload), start=1):
+        if not isinstance(item, dict):
+            continue
+        raw_type = str(item.get("type", "ok") or "ok").strip().lower()
+        if raw_type not in ALLOWED_MODE1_SCRIPT_STEP_TYPES:
+            allowed = ",".join(sorted(ALLOWED_MODE1_SCRIPT_STEP_TYPES))
+            raise ValueError(f"{path}[{idx}] invalid type={raw_type}, allowed={allowed}")
+        result = item.get("result") if isinstance(item.get("result"), dict) else {}
+        steps.append(
+            Mode1ScriptStep(
+                type=raw_type,
+                text=str(item.get("text", "") or ""),
+                error=str(item.get("error", "") or ""),
+                delay_sec=max(0.0, float(item.get("delay_sec", 0.0))),
+                result=result,
+            )
+        )
+    if steps:
+        return steps
+    return [default_step]
 
 
 def _parse_mode2_validation(payload: Any, *, mode: SimulatorMode) -> Mode2ValidationConfig:

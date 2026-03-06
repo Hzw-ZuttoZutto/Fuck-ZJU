@@ -10,6 +10,7 @@ from src.live.insight.models import KeywordConfig, RealtimeInsightConfig, format
 from src.live.insight.openai_client import OpenAIInsightClient
 from src.live.insight.stage_processor import InsightStageProcessor
 from src.simulator.cache_store import SimulationCacheStore
+from src.simulator.mode1_validation import run_mode1_validation
 from src.simulator.mode2_validation import run_mode2_validation
 from src.simulator.mode_runner import run_mode
 from src.simulator.models import (
@@ -46,15 +47,23 @@ def run_simulate(args: argparse.Namespace) -> int:
             model=runtime.rt_model,
             stt_model=runtime.rt_stt_model,
             keywords_file=runtime.rt_keywords_file,
-            request_timeout_sec=max(1.0, float(runtime.rt_request_timeout_sec)),
-            retry_count=max(0, int(runtime.rt_retry_count)),
-            stage_timeout_sec=max(1.0, float(runtime.rt_stage_timeout_sec)),
+            stt_request_timeout_sec=max(1.0, float(runtime.rt_stt_request_timeout_sec)),
+            stt_stage_timeout_sec=max(1.0, float(runtime.rt_stt_stage_timeout_sec)),
+            stt_retry_count=max(0, int(runtime.rt_stt_retry_count)),
+            stt_retry_interval_sec=max(0.0, float(runtime.rt_stt_retry_interval_sec)),
+            analysis_request_timeout_sec=max(1.0, float(runtime.rt_analysis_request_timeout_sec)),
+            analysis_stage_timeout_sec=max(1.0, float(runtime.rt_analysis_stage_timeout_sec)),
+            analysis_retry_count=max(0, int(runtime.rt_analysis_retry_count)),
+            analysis_retry_interval_sec=max(0.0, float(runtime.rt_analysis_retry_interval_sec)),
             context_target_chunks=18,
             context_min_ready=0,
-            context_recent_required=4,
-            context_wait_timeout_sec=5.0,
-            context_wait_timeout_sec_1=1.0,
-            context_wait_timeout_sec_2=5.0,
+            context_recent_required=max(0, int(runtime.rt_context_recent_required)),
+            context_wait_timeout_sec=max(
+                max(0.0, float(runtime.rt_context_wait_timeout_sec_1)),
+                max(0.0, float(runtime.rt_context_wait_timeout_sec_2)),
+            ),
+            context_wait_timeout_sec_1=max(0.0, float(runtime.rt_context_wait_timeout_sec_1)),
+            context_wait_timeout_sec_2=max(0.0, float(runtime.rt_context_wait_timeout_sec_2)),
             context_check_interval_sec=0.2,
             use_dual_context_wait=True,
         )
@@ -78,7 +87,8 @@ def run_simulate(args: argparse.Namespace) -> int:
                 keywords=keywords,
                 stt_model=runtime.rt_stt_model,
                 analysis_model=runtime.rt_model,
-                request_timeout_sec=runtime.rt_request_timeout_sec,
+                stt_request_timeout_sec=runtime.rt_stt_request_timeout_sec,
+                analysis_request_timeout_sec=runtime.rt_analysis_request_timeout_sec,
                 precompute_workers=runtime.precompute_workers,
                 output_dir=run_session_dir,
                 log_fn=print,
@@ -126,13 +136,17 @@ def run_simulate(args: argparse.Namespace) -> int:
         return 1
 
     keywords = _load_keywords(runtime.rt_keywords_file)
-    needs_openai = mode in {SimulatorMode.MODE1, SimulatorMode.MODE4, SimulatorMode.MODE5}
+    needs_openai = mode in {SimulatorMode.MODE4, SimulatorMode.MODE5}
+    if mode == SimulatorMode.MODE1:
+        needs_openai = scenario.mode1.runner == "online"
     if mode in {SimulatorMode.MODE2, SimulatorMode.MODE3}:
         needs_openai = True
 
-    client = _build_openai_client(runtime, required=needs_openai)
-    if needs_openai and client is None:
-        return 1
+    client: OpenAIInsightClient | None = None
+    if needs_openai:
+        client = _build_openai_client(runtime, required=True)
+        if client is None:
+            return 1
 
     insight_config = RealtimeInsightConfig(
         enabled=True,
@@ -140,13 +154,25 @@ def run_simulate(args: argparse.Namespace) -> int:
         model=runtime.rt_model,
         stt_model=runtime.rt_stt_model,
         keywords_file=runtime.rt_keywords_file,
-        request_timeout_sec=max(2.0, float(runtime.rt_request_timeout_sec)),
-        retry_count=max(0, int(runtime.rt_retry_count)),
-        stage_timeout_sec=max(1.0, float(runtime.rt_stage_timeout_sec)),
+        stt_request_timeout_sec=max(1.0, float(runtime.rt_stt_request_timeout_sec)),
+        stt_stage_timeout_sec=max(1.0, float(runtime.rt_stt_stage_timeout_sec)),
+        stt_retry_count=max(0, int(runtime.rt_stt_retry_count)),
+        stt_retry_interval_sec=max(0.0, float(runtime.rt_stt_retry_interval_sec)),
+        analysis_request_timeout_sec=max(1.0, float(runtime.rt_analysis_request_timeout_sec)),
+        analysis_stage_timeout_sec=max(1.0, float(runtime.rt_analysis_stage_timeout_sec)),
+        analysis_retry_count=max(0, int(runtime.rt_analysis_retry_count)),
+        analysis_retry_interval_sec=max(0.0, float(runtime.rt_analysis_retry_interval_sec)),
         context_target_chunks=max(1, int(180 // max(1, runtime.chunk_seconds))),
         context_min_ready=0,
-        context_recent_required=0,
-        context_wait_timeout_sec=0.1,
+        context_recent_required=max(0, int(runtime.rt_context_recent_required)),
+        context_wait_timeout_sec=max(
+            max(0.0, float(runtime.rt_context_wait_timeout_sec_1)),
+            max(0.0, float(runtime.rt_context_wait_timeout_sec_2)),
+        ),
+        context_wait_timeout_sec_1=max(0.0, float(runtime.rt_context_wait_timeout_sec_1)),
+        context_wait_timeout_sec_2=max(0.0, float(runtime.rt_context_wait_timeout_sec_2)),
+        context_check_interval_sec=0.2,
+        use_dual_context_wait=True,
     )
 
     processor = InsightStageProcessor(
@@ -174,7 +200,8 @@ def run_simulate(args: argparse.Namespace) -> int:
             stt_model=runtime.rt_stt_model,
             analysis_model=runtime.rt_model,
             chunk_seconds=runtime.chunk_seconds,
-            request_timeout_sec=runtime.rt_request_timeout_sec,
+            stt_request_timeout_sec=runtime.rt_stt_request_timeout_sec,
+            analysis_request_timeout_sec=runtime.rt_analysis_request_timeout_sec,
             workers=workers,
             log_fn=print,
         )
@@ -192,7 +219,8 @@ def run_simulate(args: argparse.Namespace) -> int:
             keywords=keywords,
             stt_model=runtime.rt_stt_model,
             analysis_model=runtime.rt_model,
-            request_timeout_sec=runtime.rt_request_timeout_sec,
+            stt_request_timeout_sec=runtime.rt_stt_request_timeout_sec,
+            analysis_request_timeout_sec=runtime.rt_analysis_request_timeout_sec,
             precompute_workers=runtime.precompute_workers,
             output_dir=run_session_dir,
             log_fn=print,
@@ -215,6 +243,28 @@ def run_simulate(args: argparse.Namespace) -> int:
     }
 
     strict_failed = False
+    if mode == SimulatorMode.MODE1:
+        validation = run_mode1_validation(
+            run_session_dir=run_session_dir,
+            run_summary=result.summary,
+            config=insight_config,
+            validation_config=scenario.mode1.validation,
+        )
+        report["summary"]["mode1_validation"] = {
+            "passed": bool(validation.get("passed", False)),
+            "legal_passed": bool(validation.get("legal_passed", False)),
+            "coverage_passed": bool(validation.get("coverage_passed", False)),
+            "strict_fail": bool(validation.get("strict_fail", False)),
+            "failure_count": int(validation.get("failure_count", 0)),
+            "missing_branches": list(validation.get("missing_branches", [])),
+            "report_file": str(validation.get("report_file", "")),
+        }
+        if not bool(validation.get("passed", False)):
+            failures = validation.get("failures", [])
+            if failures:
+                print(f"[simulate] mode1 validation first failure: {failures[0]}")
+            strict_failed = True
+
     if mode in {SimulatorMode.MODE2, SimulatorMode.MODE3} and (
         scenario.mode2_validation.strict_fail or scenario.mode2_validation.has_checks()
     ):
@@ -279,12 +329,20 @@ def _build_runtime_config(args: argparse.Namespace) -> SimulateRuntimeConfig:
         chunk_seconds=max(2, int(args.chunk_seconds)),
         precompute_workers=max(1, int(args.precompute_workers)),
         rt_model=(args.rt_model or "").strip() or "gpt-5-mini",
-        rt_stt_model=(args.rt_stt_model or "").strip() or "gpt-4o-mini-transcribe",
+        rt_stt_model=(args.rt_stt_model or "").strip() or "whisper-large-v3",
         rt_keywords_file=keywords_file,
         rt_api_base_url=(args.rt_api_base_url or "").strip(),
-        rt_request_timeout_sec=max(1.0, float(args.rt_request_timeout_sec)),
-        rt_stage_timeout_sec=max(1.0, float(args.rt_stage_timeout_sec)),
-        rt_retry_count=max(0, int(args.rt_retry_count)),
+        rt_stt_request_timeout_sec=max(1.0, float(args.rt_stt_request_timeout_sec)),
+        rt_stt_stage_timeout_sec=max(1.0, float(args.rt_stt_stage_timeout_sec)),
+        rt_stt_retry_count=max(0, int(args.rt_stt_retry_count)),
+        rt_stt_retry_interval_sec=max(0.0, float(args.rt_stt_retry_interval_sec)),
+        rt_analysis_request_timeout_sec=max(1.0, float(args.rt_analysis_request_timeout_sec)),
+        rt_analysis_stage_timeout_sec=max(1.0, float(args.rt_analysis_stage_timeout_sec)),
+        rt_analysis_retry_count=max(0, int(args.rt_analysis_retry_count)),
+        rt_analysis_retry_interval_sec=max(0.0, float(args.rt_analysis_retry_interval_sec)),
+        rt_context_recent_required=max(0, int(args.rt_context_recent_required)),
+        rt_context_wait_timeout_sec_1=max(0.0, float(args.rt_context_wait_timeout_sec_1)),
+        rt_context_wait_timeout_sec_2=max(0.0, float(args.rt_context_wait_timeout_sec_2)),
         seed=int(args.seed) if args.seed is not None else None,
         mode5_profile=mode5_profile,
         mode5_target_seq=mode5_target_seq,
@@ -310,7 +368,10 @@ def _build_openai_client(
             print(f"[simulate] using OpenAI-compatible base URL: {base_url}")
         return OpenAIInsightClient(
             api_key=api_key,
-            timeout_sec=runtime.rt_request_timeout_sec,
+            timeout_sec=max(
+                float(runtime.rt_stt_request_timeout_sec),
+                float(runtime.rt_analysis_request_timeout_sec),
+            ),
             base_url=base_url,
         )
     except Exception as exc:

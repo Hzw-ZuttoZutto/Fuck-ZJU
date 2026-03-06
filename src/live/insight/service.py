@@ -123,7 +123,10 @@ class RealtimeInsightService:
             try:
                 self._client = OpenAIInsightClient(
                     api_key=api_key,
-                    timeout_sec=self.config.request_timeout_sec,
+                    timeout_sec=max(
+                        float(self.config.stt_request_timeout_sec),
+                        float(self.config.analysis_request_timeout_sec),
+                    ),
                     base_url=base_url,
                 )
             except Exception as exc:
@@ -291,14 +294,14 @@ class RealtimeInsightService:
         if self._client is None:
             return "", "transcript_drop_error", 0, "OpenAI client unavailable"
 
-        total_attempts = max(1, 1 + int(self.config.retry_count))
-        deadline = time.monotonic() + max(1.0, float(self.config.stage_timeout_sec))
+        total_attempts = max(1, int(self.config.stt_retry_count))
+        deadline = time.monotonic() + max(1.0, float(self.config.stt_stage_timeout_sec))
         last_error = ""
         for attempt in range(1, total_attempts + 1):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return "", "transcript_drop_timeout", attempt - 1, last_error or "stage timeout"
-            per_call_timeout = min(max(1.0, float(self.config.request_timeout_sec)), remaining)
+            per_call_timeout = min(max(1.0, float(self.config.stt_request_timeout_sec)), remaining)
             try:
                 text = self._client.transcribe_chunk(
                     chunk_path=chunk_path,
@@ -312,7 +315,7 @@ class RealtimeInsightService:
             except Exception as exc:
                 last_error = str(exc)
                 if attempt < total_attempts:
-                    time.sleep(0.2)
+                    time.sleep(max(0.0, float(self.config.stt_retry_interval_sec)) or 0.2)
                     continue
         timed_out = time.monotonic() >= deadline or ("timeout" in last_error.lower())
         status = "transcript_drop_timeout" if timed_out else "transcript_drop_error"
@@ -327,14 +330,14 @@ class RealtimeInsightService:
         if self._client is None:
             return None, "analysis_drop_error", 0, "OpenAI client unavailable"
 
-        total_attempts = max(1, 1 + int(self.config.retry_count))
-        deadline = time.monotonic() + max(1.0, float(self.config.stage_timeout_sec))
+        total_attempts = max(1, int(self.config.analysis_retry_count))
+        deadline = time.monotonic() + max(1.0, float(self.config.analysis_stage_timeout_sec))
         last_error = ""
         for attempt in range(1, total_attempts + 1):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return None, "analysis_drop_timeout", attempt - 1, last_error or "stage timeout"
-            per_call_timeout = min(max(1.0, float(self.config.request_timeout_sec)), remaining)
+            per_call_timeout = min(max(1.0, float(self.config.analysis_request_timeout_sec)), remaining)
             try:
                 result = self._client.analyze_text(
                     analysis_model=self.config.model,
@@ -347,7 +350,7 @@ class RealtimeInsightService:
             except Exception as exc:
                 last_error = str(exc)
                 if attempt < total_attempts:
-                    time.sleep(0.2)
+                    time.sleep(max(0.0, float(self.config.analysis_retry_interval_sec)) or 0.2)
                     continue
         timed_out = time.monotonic() >= deadline or ("timeout" in last_error.lower())
         status = "analysis_drop_timeout" if timed_out else "analysis_drop_error"

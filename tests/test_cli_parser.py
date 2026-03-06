@@ -71,17 +71,23 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(args.rt_chunk_seconds, 10)
         self.assertEqual(args.rt_context_window_seconds, 180)
         self.assertEqual(args.rt_model, "gpt-5-mini")
-        self.assertEqual(args.rt_stt_model, "gpt-4o-mini-transcribe")
+        self.assertEqual(args.rt_stt_model, "whisper-large-v3")
         self.assertEqual(args.rt_keywords_file, "config/realtime_keywords.json")
         self.assertEqual(args.rt_api_base_url, "")
-        self.assertEqual(args.rt_request_timeout_sec, 12.0)
-        self.assertEqual(args.rt_retry_count, 2)
+        self.assertEqual(args.rt_stt_request_timeout_sec, 8.0)
+        self.assertEqual(args.rt_stt_stage_timeout_sec, 32.0)
+        self.assertEqual(args.rt_stt_retry_count, 4)
+        self.assertEqual(args.rt_stt_retry_interval_sec, 0.2)
+        self.assertEqual(args.rt_analysis_request_timeout_sec, 15.0)
+        self.assertEqual(args.rt_analysis_stage_timeout_sec, 60.0)
+        self.assertEqual(args.rt_analysis_retry_count, 4)
+        self.assertEqual(args.rt_analysis_retry_interval_sec, 0.2)
         self.assertEqual(args.rt_alert_threshold, 90)
         self.assertEqual(args.rt_max_concurrency, 5)
-        self.assertEqual(args.rt_stage_timeout_sec, 60.0)
         self.assertEqual(args.rt_context_min_ready, 15)
         self.assertEqual(args.rt_context_recent_required, 4)
-        self.assertEqual(args.rt_context_wait_timeout_sec, 15.0)
+        self.assertEqual(args.rt_context_wait_timeout_sec_1, 1.0)
+        self.assertEqual(args.rt_context_wait_timeout_sec_2, 5.0)
 
     def test_watch_record_args_custom(self) -> None:
         parser = build_parser()
@@ -112,26 +118,38 @@ class CliParserTests(unittest.TestCase):
                 "--rt-model",
                 "gpt-5-mini",
                 "--rt-stt-model",
-                "gpt-4o-mini-transcribe",
+                "whisper-large-v3",
                 "--rt-keywords-file",
                 "/tmp/k.json",
                 "--rt-api-base-url",
                 "https://aihubmix.com/v1",
-                "--rt-request-timeout-sec",
+                "--rt-stt-request-timeout-sec",
                 "8",
-                "--rt-retry-count",
+                "--rt-stt-stage-timeout-sec",
+                "45",
+                "--rt-stt-retry-count",
                 "4",
+                "--rt-stt-retry-interval-sec",
+                "0.3",
+                "--rt-analysis-request-timeout-sec",
+                "11",
+                "--rt-analysis-stage-timeout-sec",
+                "50",
+                "--rt-analysis-retry-count",
+                "5",
+                "--rt-analysis-retry-interval-sec",
+                "0.4",
                 "--rt-alert-threshold",
                 "88",
                 "--rt-max-concurrency",
                 "3",
-                "--rt-stage-timeout-sec",
-                "45",
                 "--rt-context-min-ready",
                 "10",
                 "--rt-context-recent-required",
                 "3",
-                "--rt-context-wait-timeout-sec",
+                "--rt-context-wait-timeout-sec-1",
+                "2",
+                "--rt-context-wait-timeout-sec-2",
                 "9",
             ]
         )
@@ -143,17 +161,23 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(args.rt_chunk_seconds, 12)
         self.assertEqual(args.rt_context_window_seconds, 240)
         self.assertEqual(args.rt_model, "gpt-5-mini")
-        self.assertEqual(args.rt_stt_model, "gpt-4o-mini-transcribe")
+        self.assertEqual(args.rt_stt_model, "whisper-large-v3")
         self.assertEqual(args.rt_keywords_file, "/tmp/k.json")
         self.assertEqual(args.rt_api_base_url, "https://aihubmix.com/v1")
-        self.assertEqual(args.rt_request_timeout_sec, 8.0)
-        self.assertEqual(args.rt_retry_count, 4)
+        self.assertEqual(args.rt_stt_request_timeout_sec, 8.0)
+        self.assertEqual(args.rt_stt_stage_timeout_sec, 45.0)
+        self.assertEqual(args.rt_stt_retry_count, 4)
+        self.assertEqual(args.rt_stt_retry_interval_sec, 0.3)
+        self.assertEqual(args.rt_analysis_request_timeout_sec, 11.0)
+        self.assertEqual(args.rt_analysis_stage_timeout_sec, 50.0)
+        self.assertEqual(args.rt_analysis_retry_count, 5)
+        self.assertEqual(args.rt_analysis_retry_interval_sec, 0.4)
         self.assertEqual(args.rt_alert_threshold, 88)
         self.assertEqual(args.rt_max_concurrency, 3)
-        self.assertEqual(args.rt_stage_timeout_sec, 45.0)
         self.assertEqual(args.rt_context_min_ready, 10)
         self.assertEqual(args.rt_context_recent_required, 3)
-        self.assertEqual(args.rt_context_wait_timeout_sec, 9.0)
+        self.assertEqual(args.rt_context_wait_timeout_sec_1, 2.0)
+        self.assertEqual(args.rt_context_wait_timeout_sec_2, 9.0)
 
     def test_simulate_mode5_profile_defaults(self) -> None:
         parser = build_parser()

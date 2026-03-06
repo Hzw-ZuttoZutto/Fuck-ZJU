@@ -70,15 +70,23 @@ python -m src.main watch \
   --sub-id <sub_id> \
   --record-dir ./records \
   --rt-insight-enabled \
-  --rt-stt-model gpt-4o-mini-transcribe \
+  --rt-stt-model whisper-large-v3 \
   --rt-model gpt-5-mini \
   --rt-chunk-seconds 10 \
   --rt-context-window-seconds 180 \
   --rt-max-concurrency 5 \
-  --rt-stage-timeout-sec 60 \
+  --rt-stt-request-timeout-sec 8 \
+  --rt-stt-stage-timeout-sec 32 \
+  --rt-stt-retry-count 4 \
+  --rt-stt-retry-interval-sec 0.2 \
+  --rt-analysis-request-timeout-sec 15 \
+  --rt-analysis-stage-timeout-sec 60 \
+  --rt-analysis-retry-count 4 \
+  --rt-analysis-retry-interval-sec 0.2 \
   --rt-context-min-ready 15 \
   --rt-context-recent-required 4 \
-  --rt-context-wait-timeout-sec 15 \
+  --rt-context-wait-timeout-sec-1 1 \
+  --rt-context-wait-timeout-sec-2 5 \
   --rt-api-base-url https://aihubmix.com/v1 \
   --rt-keywords-file config/realtime_keywords.json
 

@@ -79,7 +79,8 @@ class PrecomputeTests(unittest.TestCase):
                 stt_model="stt",
                 analysis_model="ana",
                 chunk_seconds=10,
-                request_timeout_sec=3.0,
+                stt_request_timeout_sec=3.0,
+                analysis_request_timeout_sec=3.0,
                 workers=2,
                 log_fn=lambda _: None,
             )

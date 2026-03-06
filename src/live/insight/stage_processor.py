@@ -46,7 +46,7 @@ class InsightStageProcessor:
 
     def process_chunk(self, chunk_seq: int, chunk_path: Path) -> None:
         now = datetime.now().astimezone()
-        transcript_text, stt_status, stt_attempt, stt_error = self.transcribe_with_retry(chunk_path)
+        transcript_text, stt_status, stt_attempt, stt_error, stt_elapsed_sec = self.transcribe_with_retry(chunk_path)
         transcript_chunk = TranscriptChunk(
             chunk_seq=chunk_seq,
             chunk_file=chunk_path.name,
@@ -54,6 +54,8 @@ class InsightStageProcessor:
             text=transcript_text,
             status=stt_status,
             error=stt_error,
+            attempt_count=stt_attempt,
+            elapsed_sec=stt_elapsed_sec,
         )
         self.append_transcript(transcript_chunk)
 
@@ -72,8 +74,14 @@ class InsightStageProcessor:
             mark_missing=bool(getattr(self.config, "use_dual_context_wait", False)),
         )
         context_chunk_count = len(context_chunks)
+        context_reason = str(self._last_context_reason or "").strip()
+        context_missing_ranges = self._missing_seq_ranges(
+            history=context_chunks,
+            chunk_seq=chunk_seq,
+            target_chunks=max(1, int(self.config.context_target_chunks)),
+        )
 
-        result, analysis_status, analysis_attempt, analysis_error = self.analyze_with_retry(
+        result, analysis_status, analysis_attempt, analysis_error, analysis_elapsed_sec = self.analyze_with_retry(
             current_text=transcript_text,
             context_text=context_text,
         )
@@ -86,6 +94,9 @@ class InsightStageProcessor:
                 attempt_count=analysis_attempt,
                 error=analysis_error,
                 context_chunk_count=context_chunk_count,
+                analysis_elapsed_sec=analysis_elapsed_sec,
+                context_reason=context_reason,
+                context_missing_ranges=context_missing_ranges,
             )
             self._log(
                 f"[WARNING] [rt-insight] analysis dropped seq={chunk_seq} file={chunk_path.name} "
@@ -100,6 +111,9 @@ class InsightStageProcessor:
             result=result,
             attempt_count=analysis_attempt,
             context_chunk_count=context_chunk_count,
+            analysis_elapsed_sec=analysis_elapsed_sec,
+            context_reason=context_reason,
+            context_missing_ranges=context_missing_ranges,
         )
 
     def process_simulated_chunk(
@@ -129,6 +143,8 @@ class InsightStageProcessor:
             text=text,
             status=normalized_t_status,
             error=(transcript_error or "").strip(),
+            attempt_count=max(0, int(transcript_attempt)),
+            elapsed_sec=0.0,
         )
         self.append_transcript(transcript_chunk)
 
@@ -168,6 +184,13 @@ class InsightStageProcessor:
                 attempt_count=max(1, int(analysis_attempt)),
                 error=(analysis_error or "").strip(),
                 context_chunk_count=len(history),
+                analysis_elapsed_sec=0.0,
+                context_reason="simulated",
+                context_missing_ranges=self._missing_seq_ranges(
+                    history=history,
+                    chunk_seq=chunk_seq,
+                    target_chunks=max(1, int(self.config.context_target_chunks)),
+                ),
             )
             self._log(
                 f"[WARNING] [rt-insight] analysis dropped seq={chunk_seq} file={chunk_path.name} "
@@ -182,21 +205,35 @@ class InsightStageProcessor:
             result=analysis_result,
             attempt_count=max(1, int(analysis_attempt)),
             context_chunk_count=len(history),
+            analysis_elapsed_sec=0.0,
+            context_reason="simulated",
+            context_missing_ranges=self._missing_seq_ranges(
+                history=history,
+                chunk_seq=chunk_seq,
+                target_chunks=max(1, int(self.config.context_target_chunks)),
+            ),
         )
 
-    def transcribe_with_retry(self, chunk_path: Path) -> tuple[str, str, int, str]:
+    def transcribe_with_retry(self, chunk_path: Path) -> tuple[str, str, int, str, float]:
         if self.client is None:
-            return "", "transcript_drop_error", 0, "OpenAI client unavailable"
+            return "", "transcript_drop_error", 0, "OpenAI client unavailable", 0.0
 
-        total_attempts = max(1, int(self.config.retry_count))
-        deadline = time.monotonic() + max(1.0, float(self.config.stage_timeout_sec))
+        started = time.monotonic()
+        total_attempts = max(1, int(self.config.stt_retry_count))
+        deadline = started + max(1.0, float(self.config.stt_stage_timeout_sec))
         last_error = ""
-        retry_interval_sec = max(0.0, float(getattr(self.config, "context_check_interval_sec", 0.2)))
+        retry_interval_sec = max(0.0, float(getattr(self.config, "stt_retry_interval_sec", 0.2)))
         for attempt in range(1, total_attempts + 1):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return "", "transcript_drop_timeout", attempt - 1, last_error or "stage timeout"
-            per_call_timeout = min(max(1.0, float(self.config.request_timeout_sec)), remaining)
+                return (
+                    "",
+                    "transcript_drop_timeout",
+                    attempt - 1,
+                    last_error or "stage timeout",
+                    max(0.0, time.monotonic() - started),
+                )
+            per_call_timeout = min(max(1.0, float(self.config.stt_request_timeout_sec)), remaining)
             try:
                 text = self.client.transcribe_chunk(
                     chunk_path=chunk_path,
@@ -206,7 +243,7 @@ class InsightStageProcessor:
                 text = text.strip()
                 if not text:
                     raise ValueError("transcript is empty")
-                return text, "ok", attempt, ""
+                return text, "ok", attempt, "", max(0.0, time.monotonic() - started)
             except Exception as exc:
                 last_error = str(exc)
                 if attempt < total_attempts:
@@ -214,26 +251,33 @@ class InsightStageProcessor:
                     continue
         timed_out = time.monotonic() >= deadline or ("timeout" in last_error.lower())
         status = "transcript_drop_timeout" if timed_out else "transcript_drop_error"
-        return "", status, total_attempts, last_error
+        return "", status, total_attempts, last_error, max(0.0, time.monotonic() - started)
 
     def analyze_with_retry(
         self,
         *,
         current_text: str,
         context_text: str,
-    ) -> tuple[InsightModelResult | None, str, int, str]:
+    ) -> tuple[InsightModelResult | None, str, int, str, float]:
         if self.client is None:
-            return None, "analysis_drop_error", 0, "OpenAI client unavailable"
+            return None, "analysis_drop_error", 0, "OpenAI client unavailable", 0.0
 
-        total_attempts = max(1, int(self.config.retry_count))
-        deadline = time.monotonic() + max(1.0, float(self.config.stage_timeout_sec))
+        started = time.monotonic()
+        total_attempts = max(1, int(self.config.analysis_retry_count))
+        deadline = started + max(1.0, float(self.config.analysis_stage_timeout_sec))
         last_error = ""
-        retry_interval_sec = max(0.0, float(getattr(self.config, "context_check_interval_sec", 0.2)))
+        retry_interval_sec = max(0.0, float(getattr(self.config, "analysis_retry_interval_sec", 0.2)))
         for attempt in range(1, total_attempts + 1):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return None, "analysis_drop_timeout", attempt - 1, last_error or "stage timeout"
-            per_call_timeout = min(max(1.0, float(self.config.request_timeout_sec)), remaining)
+                return (
+                    None,
+                    "analysis_drop_timeout",
+                    attempt - 1,
+                    last_error or "stage timeout",
+                    max(0.0, time.monotonic() - started),
+                )
+            per_call_timeout = min(max(1.0, float(self.config.analysis_request_timeout_sec)), remaining)
             try:
                 result = self.client.analyze_text(
                     analysis_model=self.config.model,
@@ -242,7 +286,7 @@ class InsightStageProcessor:
                     context_text=context_text,
                     timeout_sec=per_call_timeout,
                 )
-                return result, "ok", attempt, ""
+                return result, "ok", attempt, "", max(0.0, time.monotonic() - started)
             except Exception as exc:
                 last_error = str(exc)
                 if attempt < total_attempts:
@@ -250,7 +294,7 @@ class InsightStageProcessor:
                     continue
         timed_out = time.monotonic() >= deadline or ("timeout" in last_error.lower())
         status = "analysis_drop_timeout" if timed_out else "analysis_drop_error"
-        return None, status, total_attempts, last_error
+        return None, status, total_attempts, last_error, max(0.0, time.monotonic() - started)
 
     def wait_and_collect_history(self, chunk_seq: int) -> list[TranscriptChunk]:
         poll_interval_sec = max(0.01, float(getattr(self.config, "context_check_interval_sec", 0.2)))
@@ -477,6 +521,9 @@ class InsightStageProcessor:
         attempt_count: int,
         error: str,
         context_chunk_count: int,
+        analysis_elapsed_sec: float = 0.0,
+        context_reason: str = "",
+        context_missing_ranges: list[str] | None = None,
     ) -> None:
         summary = "分析超时已丢弃" if status == "analysis_drop_timeout" else "分析失败已丢弃"
         event = InsightEvent(
@@ -494,6 +541,9 @@ class InsightStageProcessor:
             is_recovery=self.mark_and_check_recovery(chunk_seq),
             status=status,
             error=error,
+            analysis_elapsed_sec=max(0.0, float(analysis_elapsed_sec)),
+            context_reason=str(context_reason or "").strip(),
+            context_missing_ranges=list(context_missing_ranges or []),
         )
         self.append_insight_event(event)
 
@@ -506,6 +556,9 @@ class InsightStageProcessor:
         result: InsightModelResult,
         attempt_count: int,
         context_chunk_count: int,
+        analysis_elapsed_sec: float = 0.0,
+        context_reason: str = "",
+        context_missing_ranges: list[str] | None = None,
     ) -> None:
         summary = result.summary or "当前没有什么重要内容"
         context_summary = result.context_summary or "无重要内容"
@@ -522,6 +575,9 @@ class InsightStageProcessor:
             attempt_count=attempt_count,
             context_chunk_count=context_chunk_count,
             is_recovery=self.mark_and_check_recovery(chunk_seq),
+            analysis_elapsed_sec=max(0.0, float(analysis_elapsed_sec)),
+            context_reason=str(context_reason or "").strip(),
+            context_missing_ranges=list(context_missing_ranges or []),
         )
         self.append_insight_event(event)
 

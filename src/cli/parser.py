@@ -143,7 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     watch.add_argument(
         "--rt-stt-model",
-        default="gpt-4o-mini-transcribe",
+        default="whisper-large-v3",
         help="OpenAI speech-to-text model for realtime insight",
     )
     watch.add_argument(
@@ -157,16 +157,52 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional OpenAI-compatible API base URL (e.g. https://aihubmix.com/v1)",
     )
     watch.add_argument(
-        "--rt-request-timeout-sec",
+        "--rt-stt-request-timeout-sec",
         type=float,
-        default=12.0,
-        help="Per-request timeout seconds for realtime insight model call",
+        default=8.0,
+        help="Per-request timeout seconds for realtime STT stage",
     )
     watch.add_argument(
-        "--rt-retry-count",
+        "--rt-stt-stage-timeout-sec",
+        type=float,
+        default=32.0,
+        help="Stage timeout seconds for realtime STT retries",
+    )
+    watch.add_argument(
+        "--rt-stt-retry-count",
         type=int,
-        default=2,
-        help="Retry count when realtime insight model call fails",
+        default=4,
+        help="Total attempts allowed for realtime STT stage",
+    )
+    watch.add_argument(
+        "--rt-stt-retry-interval-sec",
+        type=float,
+        default=0.2,
+        help="Wait seconds before STT retry after each failed attempt",
+    )
+    watch.add_argument(
+        "--rt-analysis-request-timeout-sec",
+        type=float,
+        default=15.0,
+        help="Per-request timeout seconds for realtime analysis stage",
+    )
+    watch.add_argument(
+        "--rt-analysis-stage-timeout-sec",
+        type=float,
+        default=60.0,
+        help="Stage timeout seconds for realtime analysis retries",
+    )
+    watch.add_argument(
+        "--rt-analysis-retry-count",
+        type=int,
+        default=4,
+        help="Total attempts allowed for realtime analysis stage",
+    )
+    watch.add_argument(
+        "--rt-analysis-retry-interval-sec",
+        type=float,
+        default=0.2,
+        help="Wait seconds before analysis retry after each failed attempt",
     )
     watch.add_argument(
         "--rt-alert-threshold",
@@ -181,12 +217,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum concurrent async workers for realtime insight pipeline",
     )
     watch.add_argument(
-        "--rt-stage-timeout-sec",
-        type=float,
-        default=60.0,
-        help="Max seconds for each stage (STT or analysis) before dropping chunk",
-    )
-    watch.add_argument(
         "--rt-context-min-ready",
         type=int,
         default=15,
@@ -199,11 +229,206 @@ def build_parser() -> argparse.ArgumentParser:
         help="Required most-recent transcript chunks that must be present for context gate",
     )
     watch.add_argument(
-        "--rt-context-wait-timeout-sec",
+        "--rt-context-wait-timeout-sec-1",
+        type=float,
+        default=1.0,
+        help="After recent context is ready, extra wait seconds for full target context",
+    )
+    watch.add_argument(
+        "--rt-context-wait-timeout-sec-2",
+        type=float,
+        default=5.0,
+        help="Timeout seconds while waiting recent context to become ready",
+    )
+
+    mic_listen = subparsers.add_parser(
+        "mic-listen",
+        help="Run standalone microphone upload receiver and realtime insight pipeline on server side",
+    )
+    mic_listen.add_argument("--host", default="127.0.0.1", help="Listen host")
+    mic_listen.add_argument("--port", type=int, default=18765, help="Listen port")
+    mic_listen.add_argument(
+        "--session-dir",
+        default="",
+        help="Session directory for realtime output logs; default creates mic session in cwd",
+    )
+    mic_listen.add_argument(
+        "--mic-upload-token",
+        default="",
+        help="Shared token expected in X-Mic-Token header",
+    )
+    mic_listen.add_argument(
+        "--mic-chunk-max-bytes",
+        type=int,
+        default=10 * 1024 * 1024,
+        help="Maximum accepted upload size per chunk",
+    )
+    mic_listen.add_argument(
+        "--mic-chunk-dir",
+        default="_rt_chunks_mic",
+        help="Chunk directory (relative to session dir if not absolute)",
+    )
+    mic_listen.add_argument(
+        "--rt-chunk-seconds",
+        type=int,
+        default=10,
+        help="Expected chunk duration seconds used by downstream analysis config",
+    )
+    mic_listen.add_argument(
+        "--rt-context-window-seconds",
+        type=int,
+        default=180,
+        help="Historical summary context window in seconds",
+    )
+    mic_listen.add_argument(
+        "--rt-model",
+        default="gpt-5-mini",
+        help="OpenAI text model for realtime insight analysis",
+    )
+    mic_listen.add_argument(
+        "--rt-stt-model",
+        default="whisper-large-v3",
+        help="OpenAI speech-to-text model for realtime insight",
+    )
+    mic_listen.add_argument(
+        "--rt-keywords-file",
+        default="config/realtime_keywords.json",
+        help="Keyword configuration file path for realtime insight",
+    )
+    mic_listen.add_argument(
+        "--rt-api-base-url",
+        default="",
+        help="Optional OpenAI-compatible API base URL",
+    )
+    mic_listen.add_argument(
+        "--rt-stt-request-timeout-sec",
+        type=float,
+        default=8.0,
+        help="Per-request timeout seconds for realtime STT stage",
+    )
+    mic_listen.add_argument(
+        "--rt-stt-stage-timeout-sec",
+        type=float,
+        default=32.0,
+        help="Stage timeout seconds for realtime STT retries",
+    )
+    mic_listen.add_argument(
+        "--rt-stt-retry-count",
+        type=int,
+        default=4,
+        help="Total attempts allowed for realtime STT stage",
+    )
+    mic_listen.add_argument(
+        "--rt-stt-retry-interval-sec",
+        type=float,
+        default=0.2,
+        help="Wait seconds before STT retry after each failed attempt",
+    )
+    mic_listen.add_argument(
+        "--rt-analysis-request-timeout-sec",
         type=float,
         default=15.0,
-        help="Max seconds waiting for context gate; timeout falls back to partial context",
+        help="Per-request timeout seconds for realtime analysis stage",
     )
+    mic_listen.add_argument(
+        "--rt-analysis-stage-timeout-sec",
+        type=float,
+        default=60.0,
+        help="Stage timeout seconds for realtime analysis retries",
+    )
+    mic_listen.add_argument(
+        "--rt-analysis-retry-count",
+        type=int,
+        default=4,
+        help="Total attempts allowed for realtime analysis stage",
+    )
+    mic_listen.add_argument(
+        "--rt-analysis-retry-interval-sec",
+        type=float,
+        default=0.2,
+        help="Wait seconds before analysis retry after each failed attempt",
+    )
+    mic_listen.add_argument(
+        "--rt-alert-threshold",
+        type=int,
+        default=90,
+        help="Urgency threshold for [ALERT] console output",
+    )
+    mic_listen.add_argument(
+        "--rt-context-min-ready",
+        type=int,
+        default=15,
+        help="Minimum ready transcript chunks before strict context gate is considered met",
+    )
+    mic_listen.add_argument(
+        "--rt-context-recent-required",
+        type=int,
+        default=4,
+        help="Required most-recent transcript chunks that must be present for context gate",
+    )
+    mic_listen.add_argument(
+        "--rt-context-wait-timeout-sec-1",
+        type=float,
+        default=1.0,
+        help="After recent context is ready, extra wait seconds for full target context",
+    )
+    mic_listen.add_argument(
+        "--rt-context-wait-timeout-sec-2",
+        type=float,
+        default=5.0,
+        help="Timeout seconds while waiting recent context to become ready",
+    )
+
+    mic_publish = subparsers.add_parser(
+        "mic-publish",
+        help="Capture local microphone chunks and upload to mic-listen endpoint",
+    )
+    mic_publish.add_argument("--target-url", required=True, help="mic-listen base URL, e.g. http://127.0.0.1:18765")
+    mic_publish.add_argument("--mic-upload-token", required=True, help="Shared upload token")
+    mic_publish.add_argument("--device", required=True, help="Windows dshow microphone device name")
+    mic_publish.add_argument("--chunk-seconds", type=int, default=10, help="Segment duration in seconds")
+    mic_publish.add_argument(
+        "--work-dir",
+        default=".mic_publish_chunks",
+        help="Temporary local chunk directory",
+    )
+    mic_publish.add_argument("--ffmpeg-bin", default="", help="ffmpeg binary path; default from PATH")
+    mic_publish.add_argument(
+        "--request-timeout-sec",
+        type=float,
+        default=10.0,
+        help="HTTP request timeout for upload",
+    )
+    mic_publish.add_argument(
+        "--ready-age-sec",
+        type=float,
+        default=1.2,
+        help="Chunk stable age before upload attempt",
+    )
+    mic_publish.add_argument(
+        "--retry-base-sec",
+        type=float,
+        default=0.5,
+        help="Base backoff seconds for retry",
+    )
+    mic_publish.add_argument(
+        "--retry-max-sec",
+        type=float,
+        default=8.0,
+        help="Maximum backoff seconds for retry",
+    )
+    mic_publish.add_argument(
+        "--scan-interval-sec",
+        type=float,
+        default=0.2,
+        help="Polling interval for local chunk scan/upload loop",
+    )
+
+    mic_list_devices = subparsers.add_parser(
+        "mic-list-devices",
+        help="List Windows dshow microphone devices via ffmpeg",
+    )
+    mic_list_devices.add_argument("--ffmpeg-bin", default="", help="ffmpeg binary path; default from PATH")
 
     simulate = subparsers.add_parser(
         "simulate",
@@ -249,7 +474,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     simulate.add_argument(
         "--rt-stt-model",
-        default="gpt-4o-mini-transcribe",
+        default="whisper-large-v3",
         help="OpenAI speech-to-text model for translation stage",
     )
     simulate.add_argument(
@@ -263,22 +488,70 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional OpenAI-compatible API base URL (e.g. https://aihubmix.com/v1)",
     )
     simulate.add_argument(
-        "--rt-request-timeout-sec",
+        "--rt-stt-request-timeout-sec",
         type=float,
-        default=12.0,
-        help="Per-request timeout seconds for OpenAI stage calls",
+        default=8.0,
+        help="Per-request timeout seconds for STT stage calls",
     )
     simulate.add_argument(
-        "--rt-stage-timeout-sec",
+        "--rt-stt-stage-timeout-sec",
+        type=float,
+        default=32.0,
+        help="Stage timeout seconds for STT retries in simulated pipeline",
+    )
+    simulate.add_argument(
+        "--rt-stt-retry-count",
+        type=int,
+        default=4,
+        help="Total attempts allowed for STT stage in simulated pipeline",
+    )
+    simulate.add_argument(
+        "--rt-stt-retry-interval-sec",
+        type=float,
+        default=0.2,
+        help="Wait seconds before STT retry in simulated pipeline",
+    )
+    simulate.add_argument(
+        "--rt-analysis-request-timeout-sec",
+        type=float,
+        default=15.0,
+        help="Per-request timeout seconds for analysis stage calls",
+    )
+    simulate.add_argument(
+        "--rt-analysis-stage-timeout-sec",
         type=float,
         default=60.0,
-        help="Stage timeout seconds for transcript/analysis retries in simulated pipeline",
+        help="Stage timeout seconds for analysis retries in simulated pipeline",
     )
     simulate.add_argument(
-        "--rt-retry-count",
+        "--rt-analysis-retry-count",
         type=int,
-        default=2,
-        help="Retry count for transcript/analysis stage calls",
+        default=4,
+        help="Total attempts allowed for analysis stage in simulated pipeline",
+    )
+    simulate.add_argument(
+        "--rt-analysis-retry-interval-sec",
+        type=float,
+        default=0.2,
+        help="Wait seconds before analysis retry in simulated pipeline",
+    )
+    simulate.add_argument(
+        "--rt-context-recent-required",
+        type=int,
+        default=4,
+        help="Required most-recent transcript chunks for context gate",
+    )
+    simulate.add_argument(
+        "--rt-context-wait-timeout-sec-1",
+        type=float,
+        default=1.0,
+        help="After recent context is ready, extra wait seconds for full target context",
+    )
+    simulate.add_argument(
+        "--rt-context-wait-timeout-sec-2",
+        type=float,
+        default=5.0,
+        help="Timeout seconds while waiting recent context to become ready",
     )
     simulate.add_argument(
         "--seed",

@@ -1,0 +1,71 @@
+mode: 1
+name: mode1_scripted_status_retry
+seed: 7
+mode1:
+  runner: scripted
+  seq_strategy: source_seq
+  validation:
+    strict_fail: true
+    required_branches:
+      - transcript.ok
+      - transcript.drop_timeout
+      - transcript.drop_error
+      - analysis.ok
+      - analysis.drop_timeout
+      - analysis.drop_error
+      - retry.stt_gt1
+      - retry.analysis_gt1
+  scripts:
+    by_seq:
+      - seq: 1
+        stt_script:
+          - type: error
+            error: stt-first-error
+          - type: ok
+            text: stt-ok-after-retry
+        analysis_script:
+          - type: timeout_request
+            error: analysis-timeout-1
+          - type: ok
+            result:
+              important: false
+              summary: analysis-ok-after-timeout
+              context_summary: scripted
+              reason: scripted
+      - seq: 2
+        stt_script:
+          - { type: timeout_request, error: stt-timeout-1 }
+          - { type: timeout_request, error: stt-timeout-2 }
+          - { type: timeout_request, error: stt-timeout-3 }
+          - { type: timeout_request, error: stt-timeout-4 }
+      - seq: 3
+        stt_script:
+          - { type: error, error: stt-error-1 }
+          - { type: error, error: stt-error-2 }
+          - { type: error, error: stt-error-3 }
+          - { type: error, error: stt-error-4 }
+      - seq: 4
+        stt_script:
+          - type: ok
+            text: stt-ok-analysis-timeout
+        analysis_script:
+          - { type: timeout_request, error: analysis-timeout-1 }
+          - { type: timeout_request, error: analysis-timeout-2 }
+          - { type: timeout_request, error: analysis-timeout-3 }
+          - { type: timeout_request, error: analysis-timeout-4 }
+      - seq: 5
+        stt_script:
+          - type: ok
+            text: stt-ok-analysis-error
+        analysis_script:
+          - { type: error, error: analysis-error-1 }
+          - { type: error, error: analysis-error-2 }
+          - { type: error, error: analysis-error-3 }
+          - { type: error, error: analysis-error-4 }
+feed:
+  mode: burst
+  drop: []
+  duplicate: []
+  reorder: []
+  delay_backfill: []
+  barriers: []

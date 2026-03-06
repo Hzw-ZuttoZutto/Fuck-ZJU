@@ -143,14 +143,20 @@ python -m src.main watch \
   --rt-chunk-seconds 10 \
   --rt-context-window-seconds 180 \
   --rt-keywords-file config/realtime_keywords.json \
-  --rt-request-timeout-sec 12 \
-  --rt-retry-count 2 \
+  --rt-stt-request-timeout-sec 8 \
+  --rt-stt-stage-timeout-sec 32 \
+  --rt-stt-retry-count 4 \
+  --rt-stt-retry-interval-sec 0.2 \
+  --rt-analysis-request-timeout-sec 15 \
+  --rt-analysis-stage-timeout-sec 60 \
+  --rt-analysis-retry-count 4 \
+  --rt-analysis-retry-interval-sec 0.2 \
   --rt-alert-threshold 90 \
   --rt-max-concurrency 5 \
-  --rt-stage-timeout-sec 60 \
   --rt-context-min-ready 15 \
   --rt-context-recent-required 4 \
-  --rt-context-wait-timeout-sec 15 \
+  --rt-context-wait-timeout-sec-1 1 \
+  --rt-context-wait-timeout-sec-2 5 \
   --no-browser
 ```
 
@@ -251,6 +257,59 @@ ssh clusters -L 8765:127.0.0.1:8765
 
 - `http://127.0.0.1:8765/player?role=teacher`
 - `http://127.0.0.1:8765/player?role=ppt`
+
+### 4.5 独立麦克风上游（mic-listen + mic-publish）
+用途：不启动直播/录制，仅使用“本机麦克风 -> SSH 中继 -> 集群分析”链路。
+
+1) 集群启动接收与分析服务：
+
+```bash
+python -m src.main mic-listen \
+  --host 127.0.0.1 \
+  --port 18765 \
+  --mic-upload-token YOUR_TOKEN \
+  --rt-stt-model whisper-large-v3 \
+  --rt-model gpt-5-mini \
+  --rt-keywords-file config/realtime_keywords.json \
+  --rt-stt-request-timeout-sec 8 \
+  --rt-stt-stage-timeout-sec 32 \
+  --rt-stt-retry-count 4 \
+  --rt-stt-retry-interval-sec 0.2 \
+  --rt-analysis-request-timeout-sec 15 \
+  --rt-analysis-stage-timeout-sec 60 \
+  --rt-analysis-retry-count 4 \
+  --rt-analysis-retry-interval-sec 0.2 \
+  --rt-context-recent-required 4 \
+  --rt-context-wait-timeout-sec-1 1 \
+  --rt-context-wait-timeout-sec-2 5
+```
+
+2) 本机（Windows）建立 SSH 端口转发：
+
+```bash
+ssh <cluster> -L 18765:127.0.0.1:18765
+```
+
+3) 本机查看麦克风设备：
+
+```bash
+python -m src.main mic-list-devices
+```
+
+4) 本机启动麦克风发布：
+
+```bash
+python -m src.main mic-publish \
+  --target-url http://127.0.0.1:18765 \
+  --mic-upload-token YOUR_TOKEN \
+  --device "你的麦克风设备名" \
+  --chunk-seconds 10
+```
+
+输出文件与 `watch --rt-insight-enabled` 相同，位于 `mic-listen` 的 `session_dir`：
+- `realtime_transcripts.jsonl`
+- `realtime_insights.jsonl`
+- `realtime_insights.log`
 
 ## 5. 指标说明（`/api/metrics`）
 

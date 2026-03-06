@@ -47,28 +47,37 @@ def _coerce_str_list(value: object) -> list[str]:
 @dataclass
 class RealtimeInsightConfig:
     enabled: bool = False
+    audio_source_mode: str = "teacher_stream"
     chunk_seconds: int = 10
     context_window_seconds: int = 180  # legacy option; default maps to 18 chunks with 10s chunk
     model: str = "gpt-5-mini"
-    stt_model: str = "gpt-4o-mini-transcribe"
+    stt_model: str = "whisper-large-v3"
     keywords_file: Path = field(default_factory=lambda: Path("config/realtime_keywords.json"))
-    request_timeout_sec: float = 12.0
-    retry_count: int = 2
+    stt_request_timeout_sec: float = 8.0
+    stt_stage_timeout_sec: float = 32.0
+    stt_retry_count: int = 4
+    stt_retry_interval_sec: float = 0.2
+    analysis_request_timeout_sec: float = 15.0
+    analysis_stage_timeout_sec: float = 60.0
+    analysis_retry_count: int = 4
+    analysis_retry_interval_sec: float = 0.2
     alert_threshold: int = 90
     poll_interval_sec: float = 1.0
     api_key_env: str = "OPENAI_API_KEY"
     base_url_env: str = "OPENAI_BASE_URL"
     api_base_url: str = ""
     max_concurrency: int = 5
-    stage_timeout_sec: float = 60.0
     context_min_ready: int = 15
     context_recent_required: int = 4
-    context_wait_timeout_sec: float = 15.0
+    context_wait_timeout_sec: float = 5.0
     context_wait_timeout_sec_1: float = 1.0
     context_wait_timeout_sec_2: float = 5.0
     context_check_interval_sec: float = 0.2
-    use_dual_context_wait: bool = False
+    use_dual_context_wait: bool = True
     context_target_chunks: int = 18
+    mic_upload_token: str = ""
+    mic_chunk_max_bytes: int = 10 * 1024 * 1024
+    mic_chunk_dir: Path = field(default_factory=lambda: Path("_rt_chunks_mic"))
 
 
 @dataclass
@@ -79,6 +88,8 @@ class TranscriptChunk:
     text: str
     status: str = "ok"
     error: str = ""
+    attempt_count: int = 0
+    elapsed_sec: float = 0.0
 
     @classmethod
     def from_json_dict(cls, payload: dict) -> "TranscriptChunk":
@@ -89,6 +100,8 @@ class TranscriptChunk:
             text=str(payload.get("text", "")).strip(),
             status=str(payload.get("status", "ok")).strip() or "ok",
             error=str(payload.get("error", "")).strip(),
+            attempt_count=int(payload.get("attempt_count", 0) or 0),
+            elapsed_sec=float(payload.get("elapsed_sec", 0.0) or 0.0),
         )
 
     def to_json_dict(self) -> dict:
@@ -99,6 +112,8 @@ class TranscriptChunk:
             "text": self.text,
             "status": self.status,
             "error": self.error,
+            "attempt_count": self.attempt_count,
+            "elapsed_sec": self.elapsed_sec,
         }
 
 
@@ -118,6 +133,9 @@ class InsightEvent:
     is_recovery: bool = False
     status: str = "ok"
     error: str = ""
+    analysis_elapsed_sec: float = 0.0
+    context_reason: str = ""
+    context_missing_ranges: list[str] = field(default_factory=list)
 
     @property
     def urgency_percent(self) -> int:
@@ -140,4 +158,7 @@ class InsightEvent:
             "is_recovery": self.is_recovery,
             "status": self.status,
             "error": self.error,
+            "analysis_elapsed_sec": self.analysis_elapsed_sec,
+            "context_reason": self.context_reason,
+            "context_missing_ranges": self.context_missing_ranges,
         }

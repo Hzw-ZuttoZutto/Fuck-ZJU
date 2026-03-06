@@ -24,12 +24,20 @@ class SimulatorCliTests(unittest.TestCase):
         self.assertEqual(args.chunk_seconds, 10)
         self.assertEqual(args.precompute_workers, 4)
         self.assertEqual(args.rt_model, "gpt-5-mini")
-        self.assertEqual(args.rt_stt_model, "gpt-4o-mini-transcribe")
+        self.assertEqual(args.rt_stt_model, "whisper-large-v3")
         self.assertEqual(args.rt_keywords_file, "config/realtime_keywords.json")
         self.assertEqual(args.rt_api_base_url, "")
-        self.assertEqual(args.rt_request_timeout_sec, 12.0)
-        self.assertEqual(args.rt_stage_timeout_sec, 60.0)
-        self.assertEqual(args.rt_retry_count, 2)
+        self.assertEqual(args.rt_stt_request_timeout_sec, 8.0)
+        self.assertEqual(args.rt_stt_stage_timeout_sec, 32.0)
+        self.assertEqual(args.rt_stt_retry_count, 4)
+        self.assertEqual(args.rt_stt_retry_interval_sec, 0.2)
+        self.assertEqual(args.rt_analysis_request_timeout_sec, 15.0)
+        self.assertEqual(args.rt_analysis_stage_timeout_sec, 60.0)
+        self.assertEqual(args.rt_analysis_retry_count, 4)
+        self.assertEqual(args.rt_analysis_retry_interval_sec, 0.2)
+        self.assertEqual(args.rt_context_recent_required, 4)
+        self.assertEqual(args.rt_context_wait_timeout_sec_1, 1.0)
+        self.assertEqual(args.rt_context_wait_timeout_sec_2, 5.0)
         self.assertIsNone(args.seed)
         self.assertEqual(args.mode5_profile, "all_chunks_dual")
         self.assertIsNone(args.mode5_target_seq)
@@ -56,17 +64,33 @@ class SimulatorCliTests(unittest.TestCase):
                 "--rt-model",
                 "gpt-5-mini",
                 "--rt-stt-model",
-                "gpt-4o-mini-transcribe",
+                "whisper-large-v3",
                 "--rt-keywords-file",
                 "/tmp/k.json",
                 "--rt-api-base-url",
                 "https://aihubmix.com/v1",
-                "--rt-request-timeout-sec",
+                "--rt-stt-request-timeout-sec",
                 "8",
-                "--rt-stage-timeout-sec",
+                "--rt-stt-stage-timeout-sec",
                 "40",
-                "--rt-retry-count",
+                "--rt-stt-retry-count",
                 "1",
+                "--rt-stt-retry-interval-sec",
+                "0.3",
+                "--rt-analysis-request-timeout-sec",
+                "12",
+                "--rt-analysis-stage-timeout-sec",
+                "55",
+                "--rt-analysis-retry-count",
+                "2",
+                "--rt-analysis-retry-interval-sec",
+                "0.4",
+                "--rt-context-recent-required",
+                "3",
+                "--rt-context-wait-timeout-sec-1",
+                "2",
+                "--rt-context-wait-timeout-sec-2",
+                "6",
                 "--seed",
                 "123",
                 "--mode5-profile",
@@ -83,9 +107,17 @@ class SimulatorCliTests(unittest.TestCase):
         self.assertEqual(args.precompute_workers, 6)
         self.assertEqual(args.rt_keywords_file, "/tmp/k.json")
         self.assertEqual(args.rt_api_base_url, "https://aihubmix.com/v1")
-        self.assertEqual(args.rt_request_timeout_sec, 8.0)
-        self.assertEqual(args.rt_stage_timeout_sec, 40.0)
-        self.assertEqual(args.rt_retry_count, 1)
+        self.assertEqual(args.rt_stt_request_timeout_sec, 8.0)
+        self.assertEqual(args.rt_stt_stage_timeout_sec, 40.0)
+        self.assertEqual(args.rt_stt_retry_count, 1)
+        self.assertEqual(args.rt_stt_retry_interval_sec, 0.3)
+        self.assertEqual(args.rt_analysis_request_timeout_sec, 12.0)
+        self.assertEqual(args.rt_analysis_stage_timeout_sec, 55.0)
+        self.assertEqual(args.rt_analysis_retry_count, 2)
+        self.assertEqual(args.rt_analysis_retry_interval_sec, 0.4)
+        self.assertEqual(args.rt_context_recent_required, 3)
+        self.assertEqual(args.rt_context_wait_timeout_sec_1, 2.0)
+        self.assertEqual(args.rt_context_wait_timeout_sec_2, 6.0)
         self.assertEqual(args.seed, 123)
         self.assertEqual(args.mode5_profile, "single_chunk_dual")
         self.assertEqual(args.mode5_target_seq, 4)

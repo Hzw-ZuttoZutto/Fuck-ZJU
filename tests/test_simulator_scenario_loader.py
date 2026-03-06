@@ -73,6 +73,72 @@ class ScenarioLoaderTests(unittest.TestCase):
             self.assertEqual(scenario.benchmark.repeats, 3)
             self.assertEqual(scenario.mode3_variant, "controlled_history")
 
+    def test_load_mode1_config_with_scripts_and_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "m1.yaml"
+            path.write_text(
+                textwrap.dedent(
+                    """
+                    mode: 1
+                    name: mode1-scripted
+                    mode1:
+                      runner: scripted
+                      seq_strategy: source_seq
+                      validation:
+                        strict_fail: true
+                        required_branches:
+                          - transcript.ok
+                          - analysis.drop_error
+                      scripts:
+                        by_seq:
+                          - seq: 2
+                            stt_script:
+                              - type: error
+                              - type: ok
+                                text: fixed
+                            analysis_script:
+                              - type: timeout_request
+                              - type: ok
+                                result:
+                                  summary: done
+                    """
+                ).strip(),
+                encoding="utf-8",
+            )
+            scenario = load_scenario(path, expected_mode=SimulatorMode.MODE1)
+            self.assertEqual(scenario.mode1.runner, "scripted")
+            self.assertEqual(scenario.mode1.seq_strategy, "source_seq")
+            self.assertTrue(scenario.mode1.validation.strict_fail)
+            self.assertEqual(
+                scenario.mode1.validation.required_branches,
+                ["transcript.ok", "analysis.drop_error"],
+            )
+            script = scenario.mode1.script_for(2)
+            self.assertIsNotNone(script)
+            assert script is not None
+            self.assertEqual(script.stt_script[0].normalized_type(), "error")
+            self.assertEqual(script.stt_script[1].text, "fixed")
+            self.assertEqual(script.analysis_script[0].normalized_type(), "timeout_request")
+            self.assertEqual(script.analysis_script[1].result["summary"], "done")
+
+    def test_reject_mode1_invalid_required_branch(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "m1_bad.yaml"
+            path.write_text(
+                textwrap.dedent(
+                    """
+                    mode: 1
+                    mode1:
+                      validation:
+                        required_branches:
+                          - not.exists
+                    """
+                ).strip(),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                _ = load_scenario(path, expected_mode=SimulatorMode.MODE1)
+
     def test_reject_invalid_visibility_length(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "bad.yaml"

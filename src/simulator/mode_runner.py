@@ -10,6 +10,7 @@ from pathlib import Path
 from statistics import mean
 from typing import Any, Callable
 
+import src.live.insight.stage_processor as stage_processor_module
 from src.live.insight.models import KeywordConfig
 from src.live.insight.openai_client import InsightModelResult, OpenAIInsightClient
 from src.live.insight.stage_processor import InsightStageProcessor
@@ -19,6 +20,8 @@ from src.simulator.mode6_runner import run_mode6_validation
 from src.simulator.models import (
     ALLOWED_MODE5_PROFILES,
     DEFAULT_MODE5_PROFILE,
+    Mode1Config,
+    Mode1ScriptStep,
     Scenario,
     SimulatorMode,
 )
@@ -40,6 +43,132 @@ class Mode5ChunkSample:
     context_chunk_count: int
 
 
+class _Mode1VirtualClock:
+    def __init__(self) -> None:
+        self._now_sec = 0.0
+
+    def monotonic(self) -> float:
+        return self._now_sec
+
+    def sleep(self, sec: float) -> None:
+        self._now_sec += max(0.0, float(sec))
+
+
+class _Mode1ScriptClient:
+    def __init__(self, *, mode1: Mode1Config, clock: _Mode1VirtualClock) -> None:
+        self._mode1 = mode1
+        self._clock = clock
+        self._active_seq = 0
+        self._active_chunk_file = ""
+        self._active_occurrence = 0
+        self._occurrence_by_seq: dict[int, int] = {}
+        self._stt_cursor_by_event: dict[tuple[int, int], int] = {}
+        self._analysis_cursor_by_event: dict[tuple[int, int], int] = {}
+
+    def begin_chunk(self, *, chunk_seq: int, chunk_file: str) -> None:
+        self._active_seq = int(chunk_seq)
+        self._active_chunk_file = str(chunk_file)
+        next_occ = self._occurrence_by_seq.get(self._active_seq, 0) + 1
+        self._occurrence_by_seq[self._active_seq] = next_occ
+        self._active_occurrence = next_occ
+
+    def transcribe_chunk(self, *, chunk_path: Path, stt_model: str, timeout_sec: float) -> str:
+        step = self._next_stt_step()
+        return self._run_stt_step(step=step, timeout_sec=timeout_sec)
+
+    def analyze_text(
+        self,
+        *,
+        analysis_model: str,
+        keywords: KeywordConfig,
+        current_text: str,
+        context_text: str,
+        timeout_sec: float,
+    ) -> InsightModelResult:
+        step = self._next_analysis_step()
+        return self._run_analysis_step(step=step, timeout_sec=timeout_sec)
+
+    def _next_stt_step(self) -> Mode1ScriptStep:
+        event_key = (self._active_seq, self._active_occurrence)
+        script = self._mode1.script_for(self._active_seq)
+        steps = script.stt_script if script is not None else []
+        if not steps:
+            steps = [Mode1ScriptStep(type="ok", text=f"scripted-stt-{self._active_seq}")]
+        cursor = self._stt_cursor_by_event.get(event_key, 0)
+        idx = min(cursor, len(steps) - 1)
+        self._stt_cursor_by_event[event_key] = cursor + 1
+        return steps[idx]
+
+    def _next_analysis_step(self) -> Mode1ScriptStep:
+        event_key = (self._active_seq, self._active_occurrence)
+        script = self._mode1.script_for(self._active_seq)
+        steps = script.analysis_script if script is not None else []
+        if not steps:
+            steps = [
+                Mode1ScriptStep(
+                    type="ok",
+                    result={
+                        "important": False,
+                        "summary": f"scripted-analysis-{self._active_seq}",
+                        "context_summary": "scripted",
+                        "matched_terms": [],
+                        "reason": "scripted",
+                    },
+                )
+            ]
+        cursor = self._analysis_cursor_by_event.get(event_key, 0)
+        idx = min(cursor, len(steps) - 1)
+        self._analysis_cursor_by_event[event_key] = cursor + 1
+        return steps[idx]
+
+    def _run_stt_step(self, *, step: Mode1ScriptStep, timeout_sec: float) -> str:
+        normalized = step.normalized_type()
+        if step.delay_sec > 0:
+            self._clock.sleep(step.delay_sec)
+        if normalized == "timeout_request":
+            self._clock.sleep(max(0.0, float(timeout_sec)))
+            raise TimeoutError(step.error or "scripted timeout")
+        if normalized == "error":
+            raise RuntimeError(step.error or "scripted error")
+        text = str(step.text or "").strip()
+        return text or f"scripted-stt-{self._active_seq}"
+
+    def _run_analysis_step(self, *, step: Mode1ScriptStep, timeout_sec: float) -> InsightModelResult:
+        normalized = step.normalized_type()
+        if step.delay_sec > 0:
+            self._clock.sleep(step.delay_sec)
+        if normalized == "timeout_request":
+            self._clock.sleep(max(0.0, float(timeout_sec)))
+            raise TimeoutError(step.error or "scripted timeout")
+        if normalized == "error":
+            raise RuntimeError(step.error or "scripted error")
+        payload = step.result if isinstance(step.result, dict) else {}
+        summary = str(payload.get("summary", "") or "").strip() or f"scripted-analysis-{self._active_seq}"
+        context_summary = str(payload.get("context_summary", "") or "").strip() or "scripted"
+        reason = str(payload.get("reason", "") or "").strip() or "scripted"
+        matched_terms = [str(x).strip() for x in payload.get("matched_terms", []) if str(x).strip()]
+        return InsightModelResult(
+            important=bool(payload.get("important", False)),
+            summary=summary,
+            context_summary=context_summary,
+            matched_terms=matched_terms,
+            reason=reason,
+        )
+
+
+def _patch_stage_time(clock: _Mode1VirtualClock) -> tuple[Callable[[], float], Callable[[float], None]]:
+    orig_monotonic = stage_processor_module.time.monotonic
+    orig_sleep = stage_processor_module.time.sleep
+    stage_processor_module.time.monotonic = clock.monotonic
+    stage_processor_module.time.sleep = clock.sleep
+    return orig_monotonic, orig_sleep
+
+
+def _restore_stage_time(original: tuple[Callable[[], float], Callable[[float], None]]) -> None:
+    stage_processor_module.time.monotonic = original[0]
+    stage_processor_module.time.sleep = original[1]
+
+
 def run_mode(
     *,
     mode: SimulatorMode,
@@ -52,7 +181,8 @@ def run_mode(
     keywords: KeywordConfig,
     stt_model: str,
     analysis_model: str,
-    request_timeout_sec: float,
+    stt_request_timeout_sec: float,
+    analysis_request_timeout_sec: float,
     precompute_workers: int,
     output_dir: Path,
     log_fn: Callable[[str], None] | None = None,
@@ -64,14 +194,24 @@ def run_mode(
     seed = seed_override if seed_override is not None else scenario.seed
 
     if mode == SimulatorMode.MODE1:
-        summary = _run_mode1(
-            scenario=scenario,
-            chunk_paths=chunk_paths,
-            chunk_seconds=chunk_seconds,
-            processor=processor,
-            seed=seed,
-            log_fn=log,
-        )
+        if scenario.mode1.runner == "scripted":
+            summary = _run_mode1_scripted(
+                scenario=scenario,
+                chunk_paths=chunk_paths,
+                chunk_seconds=chunk_seconds,
+                processor=processor,
+                seed=seed,
+                log_fn=log,
+            )
+        else:
+            summary = _run_mode1_online(
+                scenario=scenario,
+                chunk_paths=chunk_paths,
+                chunk_seconds=chunk_seconds,
+                processor=processor,
+                seed=seed,
+                log_fn=log,
+            )
         return ModeRunResult(mode=int(mode), output_dir=output_dir, summary=summary)
 
     if mode == SimulatorMode.MODE2:
@@ -115,7 +255,7 @@ def run_mode(
             chunk_paths=chunk_paths,
             client=client,
             stt_model=stt_model,
-            request_timeout_sec=request_timeout_sec,
+            stt_request_timeout_sec=stt_request_timeout_sec,
             parallel_workers=max(1, int(scenario.benchmark.parallel_workers or precompute_workers)),
             repeats=max(1, int(scenario.benchmark.repeats)),
             log_fn=log,
@@ -135,7 +275,8 @@ def run_mode(
             stt_model=stt_model,
             analysis_model=analysis_model,
             chunk_seconds=chunk_seconds,
-            request_timeout_sec=request_timeout_sec,
+            stt_request_timeout_sec=stt_request_timeout_sec,
+            analysis_request_timeout_sec=analysis_request_timeout_sec,
             parallel_workers=max(1, int(scenario.benchmark.parallel_workers or precompute_workers)),
             repeats=max(1, int(scenario.benchmark.repeats)),
             profile=mode5_profile,
@@ -160,7 +301,13 @@ def run_mode(
     raise ValueError(f"unsupported simulator mode={int(mode)}")
 
 
-def _run_mode1(
+def _mode1_chunk_seq(*, source_seq: int, emit_seq: int, scenario: Scenario) -> int:
+    if scenario.mode1.seq_strategy == "emit_seq":
+        return int(emit_seq)
+    return int(source_seq)
+
+
+def _run_mode1_online(
     *,
     scenario: Scenario,
     chunk_paths: list[Path],
@@ -172,16 +319,73 @@ def _run_mode1(
     scheduler = FeedScheduler(chunk_seconds=chunk_seconds, feed=scenario.feed, seed=seed)
     events = scheduler.build_events(chunk_paths)
 
+    emitted_seqs: list[int] = []
     for out_seq, event in enumerate(events, start=1):
         if event.wait_before_sec > 0:
             time.sleep(event.wait_before_sec)
-        processor.process_chunk(out_seq, event.chunk_path)
+        chunk_seq = _mode1_chunk_seq(source_seq=event.source_seq, emit_seq=out_seq, scenario=scenario)
+        emitted_seqs.append(chunk_seq)
+        processor.process_chunk(chunk_seq, event.chunk_path)
 
-    log_fn(f"[simulate] mode1 finished: emitted={len(events)}")
+    log_fn(
+        "[simulate] mode1 finished: "
+        f"runner=online emitted={len(events)} seq_strategy={scenario.mode1.seq_strategy}"
+    )
     return {
         "mode": 1,
         "emitted_chunks": len(events),
         "feed_mode": scenario.feed.mode,
+        "mode1_runner": "online",
+        "seq_strategy": scenario.mode1.seq_strategy,
+        "emitted_seqs": emitted_seqs,
+    }
+
+
+def _run_mode1_scripted(
+    *,
+    scenario: Scenario,
+    chunk_paths: list[Path],
+    chunk_seconds: int,
+    processor: InsightStageProcessor,
+    seed: int | None,
+    log_fn: Callable[[str], None],
+) -> dict:
+    scheduler = FeedScheduler(chunk_seconds=chunk_seconds, feed=scenario.feed, seed=seed)
+    events = scheduler.build_events(chunk_paths)
+
+    if processor.client is None:
+        original_client = None
+    else:
+        original_client = processor.client
+    clock = _Mode1VirtualClock()
+    script_client = _Mode1ScriptClient(mode1=scenario.mode1, clock=clock)
+    processor.client = script_client  # type: ignore[assignment]
+
+    emitted_seqs: list[int] = []
+    time_patch = _patch_stage_time(clock)
+    try:
+        for out_seq, event in enumerate(events, start=1):
+            if event.wait_before_sec > 0:
+                clock.sleep(event.wait_before_sec)
+            chunk_seq = _mode1_chunk_seq(source_seq=event.source_seq, emit_seq=out_seq, scenario=scenario)
+            emitted_seqs.append(chunk_seq)
+            script_client.begin_chunk(chunk_seq=chunk_seq, chunk_file=event.chunk_path.name)
+            processor.process_chunk(chunk_seq, event.chunk_path)
+    finally:
+        _restore_stage_time(time_patch)
+        processor.client = original_client
+
+    log_fn(
+        "[simulate] mode1 finished: "
+        f"runner=scripted emitted={len(events)} seq_strategy={scenario.mode1.seq_strategy}"
+    )
+    return {
+        "mode": 1,
+        "emitted_chunks": len(events),
+        "feed_mode": scenario.feed.mode,
+        "mode1_runner": "scripted",
+        "seq_strategy": scenario.mode1.seq_strategy,
+        "emitted_seqs": emitted_seqs,
     }
 
 
@@ -388,7 +592,7 @@ def _run_mode4_benchmark(
     chunk_paths: list[Path],
     client: OpenAIInsightClient,
     stt_model: str,
-    request_timeout_sec: float,
+    stt_request_timeout_sec: float,
     parallel_workers: int,
     repeats: int,
     log_fn: Callable[[str], None],
@@ -403,7 +607,7 @@ def _run_mode4_benchmark(
                     client=client,
                     chunk_path=chunk,
                     stt_model=stt_model,
-                    timeout_sec=request_timeout_sec,
+                    timeout_sec=stt_request_timeout_sec,
                     transcript_sink=transcript_by_chunk,
                     transcript_lock=transcript_lock,
                     source="serial",
@@ -422,7 +626,7 @@ def _run_mode4_benchmark(
                     client=client,
                     chunk_path=chunk,
                     stt_model=stt_model,
-                    timeout_sec=request_timeout_sec,
+                    timeout_sec=stt_request_timeout_sec,
                     transcript_sink=transcript_by_chunk,
                     transcript_lock=transcript_lock,
                     source="parallel",
@@ -458,7 +662,8 @@ def _run_mode5_benchmark(
     stt_model: str,
     analysis_model: str,
     chunk_seconds: int,
-    request_timeout_sec: float,
+    stt_request_timeout_sec: float,
+    analysis_request_timeout_sec: float,
     parallel_workers: int,
     repeats: int,
     profile: str,
@@ -476,7 +681,7 @@ def _run_mode5_benchmark(
         stt_model=stt_model,
         analysis_model=analysis_model,
         chunk_seconds=chunk_seconds,
-        request_timeout_sec=request_timeout_sec,
+        stt_request_timeout_sec=stt_request_timeout_sec,
     )
     all_samples = _build_mode5_samples(chunk_paths=chunk_paths, transcripts=transcripts)
     selected_samples = _select_mode5_samples(
@@ -512,7 +717,7 @@ def _run_mode5_benchmark(
                     analysis_model=analysis_model,
                     keywords=keywords,
                     sample=sample,
-                    timeout_sec=request_timeout_sec,
+                    timeout_sec=analysis_request_timeout_sec,
                     sample_sink=analysis_samples,
                     sample_limit=analysis_sample_limit,
                     sample_lock=sample_lock,
@@ -539,7 +744,7 @@ def _run_mode5_benchmark(
                     analysis_model=analysis_model,
                     keywords=keywords,
                     sample=sample,
-                    timeout_sec=request_timeout_sec,
+                    timeout_sec=analysis_request_timeout_sec,
                     sample_sink=analysis_samples,
                     sample_limit=analysis_sample_limit,
                     sample_lock=sample_lock,
@@ -594,10 +799,10 @@ def _prepare_mode5_transcripts(
     stt_model: str,
     analysis_model: str,
     chunk_seconds: int,
-    request_timeout_sec: float,
+    stt_request_timeout_sec: float,
 ) -> tuple[list[dict[str, Any]], dict]:
     keyword_hash = keywords_hash(keywords)
-    timeout_sec = max(1.0, float(request_timeout_sec))
+    timeout_sec = max(1.0, float(stt_request_timeout_sec))
     transcripts: list[dict[str, Any]] = []
     prep = {
         "chunk_count": len(chunk_paths),
