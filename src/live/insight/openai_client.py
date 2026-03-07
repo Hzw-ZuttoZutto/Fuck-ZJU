@@ -84,29 +84,12 @@ class OpenAIInsightClient:
             current_text=current_text,
             context_text=context_text,
         )
-        request_payload = {
-            "model": analysis_model,
-            "input": [
-                {
-                    "role": "system",
-                    "content": [{"type": "input_text", "text": system_prompt}],
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": user_prompt,
-                        }
-                    ],
-                },
-            ],
-            # gpt-5 family may return status=incomplete with only reasoning blocks under tight token limits.
-            "max_output_tokens": 1200,
-            "reasoning": {"effort": "minimal"},
-            "text": {"verbosity": "low"},
-            "timeout": max(1.0, float(timeout_sec)),
-        }
+        request_payload = _build_analysis_request_payload(
+            analysis_model=analysis_model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            timeout_sec=timeout_sec,
+        )
         parsed_payload = self._run_analysis_attempt(
             request_payload=request_payload,
             system_prompt=system_prompt,
@@ -192,19 +175,29 @@ class OpenAIInsightClient:
         request = dict(payload)
         request["temperature"] = 0
         removed: set[str] = set()
-        for _ in range(6):
+        value_adjusted: set[str] = set()
+        for _ in range(8):
             try:
                 return self.client.responses.create(**request), dict(request)
             except Exception as exc:
                 unsupported = _extract_unsupported_parameter(exc)
-                if not unsupported:
+                if unsupported:
+                    key = unsupported.split(".", 1)[0]
+                    if key and key in request and key not in removed:
+                        removed.add(key)
+                        request = dict(request)
+                        request.pop(key, None)
+                        continue
+                adjusted_request, adjusted_key = _apply_unsupported_value_fallback(
+                    request=request,
+                    exc=exc,
+                )
+                if adjusted_request is None:
                     raise
-                key = unsupported.split(".", 1)[0]
-                if not key or key not in request or key in removed:
+                if adjusted_key in value_adjusted:
                     raise
-                removed.add(key)
-                request = dict(request)
-                request.pop(key, None)
+                value_adjusted.add(adjusted_key)
+                request = adjusted_request
         return self.client.responses.create(**request), dict(request)
 
 
@@ -367,6 +360,128 @@ def _to_str_list(value: Any) -> list[str]:
         if text:
             items.append(text)
     return items
+
+
+def _build_analysis_request_payload(
+    *,
+    analysis_model: str,
+    system_prompt: str,
+    user_prompt: str,
+    timeout_sec: float,
+) -> dict[str, Any]:
+    normalized_model = _normalize_model_name(analysis_model)
+    request_payload: dict[str, Any] = {
+        "model": analysis_model,
+        "input": [
+            {
+                "role": "system",
+                "content": [{"type": "input_text", "text": system_prompt}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": user_prompt}],
+            },
+        ],
+        "max_output_tokens": 1200,
+        "timeout": max(1.0, float(timeout_sec)),
+    }
+    # Different model families enforce different request contracts.
+    # Keep one branch for gpt-4.1 to avoid unsupported-value errors and
+    # another for gpt-5 where low-verbosity + minimal reasoning is preferred.
+    if _is_gpt41_family(normalized_model):
+        request_payload["text"] = {"verbosity": "medium"}
+        return request_payload
+    request_payload["text"] = {"verbosity": "low"}
+    if _is_gpt5_family(normalized_model):
+        request_payload["reasoning"] = {"effort": "minimal"}
+    return request_payload
+
+
+def _normalize_model_name(model: str) -> str:
+    return str(model or "").strip().lower()
+
+
+def _is_gpt5_family(model: str) -> bool:
+    return model.startswith("gpt-5")
+
+
+def _is_gpt41_family(model: str) -> bool:
+    return model.startswith("gpt-4.1")
+
+
+def _apply_unsupported_value_fallback(*, request: dict[str, Any], exc: Exception) -> tuple[dict[str, Any] | None, str]:
+    unsupported_value, supported_values = _extract_unsupported_value_info(exc)
+    if not unsupported_value or not supported_values:
+        return None, ""
+
+    adjusted = _replace_nested_value_if_matches(
+        request=request,
+        nested_path=("text", "verbosity"),
+        unsupported_value=unsupported_value,
+        supported_values=supported_values,
+    )
+    if adjusted is not None:
+        return adjusted, "text.verbosity"
+
+    adjusted = _replace_nested_value_if_matches(
+        request=request,
+        nested_path=("reasoning", "effort"),
+        unsupported_value=unsupported_value,
+        supported_values=supported_values,
+    )
+    if adjusted is not None:
+        return adjusted, "reasoning.effort"
+    return None, ""
+
+
+def _replace_nested_value_if_matches(
+    *,
+    request: dict[str, Any],
+    nested_path: tuple[str, str],
+    unsupported_value: str,
+    supported_values: list[str],
+) -> dict[str, Any] | None:
+    top_key, leaf_key = nested_path
+    node = request.get(top_key)
+    if not isinstance(node, dict):
+        return None
+    current = str(node.get(leaf_key, "")).strip().lower()
+    if current != unsupported_value:
+        return None
+    new_value = supported_values[0]
+    updated_node = dict(node)
+    updated_node[leaf_key] = new_value
+    updated_request = dict(request)
+    updated_request[top_key] = updated_node
+    return updated_request
+
+
+def _extract_unsupported_value_info(exc: Exception) -> tuple[str, list[str]]:
+    message = str(exc)
+    unsupported_match = re.search(
+        r"unsupported value:\s*['\"]?([a-zA-Z0-9_.-]+)['\"]?",
+        message,
+        flags=re.IGNORECASE,
+    )
+    if not unsupported_match:
+        return "", []
+    unsupported_value = str(unsupported_match.group(1)).strip().lower()
+    supported_match = re.search(
+        r"supported values are:\s*([^\n]+)",
+        message,
+        flags=re.IGNORECASE,
+    )
+    if not supported_match:
+        return unsupported_value, []
+    segment = str(supported_match.group(1)).strip().split("(", 1)[0].strip()
+    quoted = re.findall(r"['\"]([^'\"]+)['\"]", segment)
+    raw_values = quoted if quoted else re.split(r"[,/ ]+", segment)
+    values: list[str] = []
+    for item in raw_values:
+        normalized = str(item).strip().strip(".").lower()
+        if normalized and normalized not in values:
+            values.append(normalized)
+    return unsupported_value, values
 
 
 def _is_temperature_unsupported_error(exc: Exception) -> bool:

@@ -378,6 +378,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=5.0,
         help="Timeout seconds while waiting recent context to become ready",
     )
+    mic_listen.add_argument(
+        "--rt-profile-enabled",
+        action="store_true",
+        help="Enable per-chunk realtime profile logging to separate JSONL output",
+    )
 
     mic_publish = subparsers.add_parser(
         "mic-publish",

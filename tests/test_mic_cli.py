@@ -20,6 +20,7 @@ class MicCliTests(unittest.TestCase):
         self.assertEqual(args.rt_stt_model, "whisper-large-v3")
         self.assertEqual(args.rt_stt_request_timeout_sec, 8.0)
         self.assertEqual(args.rt_analysis_request_timeout_sec, 15.0)
+        self.assertFalse(args.rt_profile_enabled)
 
     def test_mic_publish_args(self) -> None:
         parser = build_parser()
@@ -42,6 +43,11 @@ class MicCliTests(unittest.TestCase):
         self.assertEqual(args.request_timeout_sec, 10.0)
         self.assertEqual(args.retry_base_sec, 0.5)
         self.assertEqual(args.retry_max_sec, 8.0)
+
+    def test_mic_listen_profile_flag(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["mic-listen", "--rt-profile-enabled"])
+        self.assertTrue(args.rt_profile_enabled)
 
     def test_mic_list_devices_args(self) -> None:
         parser = build_parser()

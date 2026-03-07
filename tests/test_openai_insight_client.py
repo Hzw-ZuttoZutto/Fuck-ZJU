@@ -211,6 +211,88 @@ class OpenAIInsightClientTests(unittest.TestCase):
             int(events[0]["request_payload_snapshot"].get("max_output_tokens", 0)),
         )
 
+    def test_analyze_gpt41_payload_uses_medium_verbosity_without_reasoning(self) -> None:
+        class _CaptureResponses:
+            def __init__(self) -> None:
+                self.calls: list[dict] = []
+
+            def create(self, **kwargs):
+                self.calls.append(kwargs)
+                return type(
+                    "Resp",
+                    (),
+                    {
+                        "output_text": (
+                            '{"important": false, "summary": "none", '
+                            '"context_summary": "none", "matched_terms": [], "reason": "none"}'
+                        )
+                    },
+                )()
+
+        class _CaptureOpenAI:
+            def __init__(self, *, api_key: str, timeout: float) -> None:
+                self.audio = _FakeAudio()
+                self.responses = _CaptureResponses()
+
+        with mock.patch("src.live.insight.openai_client._load_openai_cls", return_value=_CaptureOpenAI):
+            client = OpenAIInsightClient(api_key="k", timeout_sec=12.0)
+            _ = client.analyze_text(
+                analysis_model="gpt-4.1",
+                keywords=KeywordConfig(),
+                current_text="class starts",
+                context_text="none",
+                timeout_sec=2.0,
+            )
+            calls = client.client.responses.calls
+            self.assertGreaterEqual(len(calls), 1)
+            request = calls[0]
+            self.assertEqual(request.get("text", {}).get("verbosity"), "medium")
+            self.assertNotIn("reasoning", request)
+
+    def test_analyze_unsupported_value_fallback_switches_verbosity(self) -> None:
+        class _ValueFallbackResponses:
+            def __init__(self) -> None:
+                self.calls: list[dict] = []
+
+            def create(self, **kwargs):
+                self.calls.append(kwargs)
+                verbosity = str(kwargs.get("text", {}).get("verbosity", "")).strip().lower()
+                if verbosity == "low":
+                    raise ValueError(
+                        "Unsupported value: 'low' is not supported with the 'gpt-4.1-mini' model. "
+                        "Supported values are: 'medium'."
+                    )
+                return type(
+                    "Resp",
+                    (),
+                    {
+                        "output_text": (
+                            '{"important": false, "summary": "ok", '
+                            '"context_summary": "ok", "matched_terms": [], "reason": "fallback"}'
+                        )
+                    },
+                )()
+
+        class _ValueFallbackOpenAI:
+            def __init__(self, *, api_key: str, timeout: float) -> None:
+                self.audio = _FakeAudio()
+                self.responses = _ValueFallbackResponses()
+
+        with mock.patch("src.live.insight.openai_client._load_openai_cls", return_value=_ValueFallbackOpenAI):
+            client = OpenAIInsightClient(api_key="k", timeout_sec=12.0)
+            result = client.analyze_text(
+                analysis_model="gpt-5-mini",
+                keywords=KeywordConfig(),
+                current_text="current",
+                context_text="history",
+                timeout_sec=2.0,
+            )
+            self.assertFalse(result.important)
+            calls = client.client.responses.calls
+            self.assertGreaterEqual(len(calls), 2)
+            self.assertEqual(calls[0].get("text", {}).get("verbosity"), "low")
+            self.assertEqual(calls[1].get("text", {}).get("verbosity"), "medium")
+
 
 if __name__ == "__main__":
     unittest.main()

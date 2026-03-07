@@ -50,6 +50,11 @@ class _FakeClient:
         )
 
 
+class _SttTimeoutClient(_FakeClient):
+    def transcribe_chunk(self, *, chunk_path: Path, stt_model: str, timeout_sec: float) -> str:
+        raise TimeoutError("stt timeout")
+
+
 class MicPipelineTests(unittest.TestCase):
     def test_mic_publisher_ffmpeg_command_contains_dshow(self) -> None:
         cmd = MicPublisher.build_ffmpeg_command(
@@ -163,6 +168,174 @@ class MicPipelineTests(unittest.TestCase):
                 self.assertEqual(len(insight_rows), 1)
                 self.assertEqual(transcript_rows[0]["status"], "ok")
                 self.assertEqual(insight_rows[0]["status"], "ok")
+            finally:
+                server.shutdown()
+                server.server_close()
+                processor.stop()
+
+    def test_mic_profile_jsonl_contains_timestamps_and_states(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cfg = RealtimeInsightConfig(
+                enabled=True,
+                chunk_seconds=10,
+                stt_request_timeout_sec=8.0,
+                stt_stage_timeout_sec=32.0,
+                stt_retry_count=2,
+                stt_retry_interval_sec=0.01,
+                analysis_request_timeout_sec=15.0,
+                analysis_stage_timeout_sec=60.0,
+                analysis_retry_count=2,
+                analysis_retry_interval_sec=0.01,
+                context_recent_required=0,
+                context_wait_timeout_sec_1=0.0,
+                context_wait_timeout_sec_2=0.0,
+                context_wait_timeout_sec=0.0,
+                context_target_chunks=18,
+                use_dual_context_wait=True,
+                mic_chunk_max_bytes=1024,
+                profile_enabled=True,
+            )
+            stage_processor = InsightStageProcessor(
+                session_dir=base,
+                config=cfg,
+                keywords=KeywordConfig(),
+                client=_FakeClient(),  # type: ignore[arg-type]
+                log_fn=lambda _msg: None,
+            )
+            processor = MicChunkProcessor(
+                stage_processor=stage_processor,
+                chunk_dir=base / "_rt_chunks_mic",
+                max_chunk_bytes=cfg.mic_chunk_max_bytes,
+                profile_enabled=cfg.profile_enabled,
+                log_fn=lambda _msg: None,
+            )
+            processor.start()
+
+            server = ThreadingHTTPServer(
+                ("127.0.0.1", 0),
+                build_mic_http_handler(processor=processor, upload_token="token-1"),
+            )
+            thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True)
+            thread.start()
+            try:
+                base_url = f"http://127.0.0.1:{server.server_port}"
+                sent_at_ms = int(time.time() * 1000)
+                ok = requests.post(
+                    f"{base_url}/api/mic/chunk",
+                    data=b"abcd",
+                    headers={
+                        "X-Mic-Token": "token-1",
+                        "X-Chunk-Name": "ok.mp3",
+                        "X-Chunk-Sent-At-Ms": str(sent_at_ms),
+                    },
+                    timeout=3,
+                )
+                self.assertEqual(ok.status_code, 202)
+
+                deadline = time.time() + 3.0
+                while time.time() < deadline:
+                    metrics = requests.get(f"{base_url}/api/mic/metrics", timeout=3).json()
+                    if int(metrics.get("processed_total", 0)) >= 1:
+                        break
+                    time.sleep(0.05)
+
+                profile_rows = _read_jsonl(base / "realtime_profile.jsonl")
+                self.assertEqual(len(profile_rows), 1)
+                row = profile_rows[0]
+                self.assertEqual(int(row["local_send_ts_ms"]), sent_at_ms)
+                self.assertEqual(str(row.get("final_status", "")), "ok")
+                self.assertEqual(str(row.get("stt_status", "")), "ok")
+                self.assertEqual(str(row.get("analysis_status", "")), "ok")
+                self.assertEqual(int(row.get("chunk_seconds", 0)), 10)
+                self.assertIn("remote_dispatch_ts_ms", row)
+                self.assertIn("stt_request_ts_ms", row)
+                self.assertIn("stt_response_ts_ms", row)
+                self.assertIn("analysis_request_ts_ms", row)
+                self.assertIn("analysis_response_ts_ms", row)
+                self.assertIn("insight_console_log_ts_ms", row)
+                self.assertIsNotNone(row.get("network_send_to_remote_receive_ms"))
+                self.assertIsNotNone(row.get("queue_wait_ms"))
+                self.assertIsNotNone(row.get("stt_ms_per_audio_sec"))
+                self.assertIsNotNone(row.get("analysis_ms_per_audio_sec"))
+                self.assertIsNotNone(row.get("remote_ms_per_audio_sec"))
+                self.assertIsNotNone(row.get("stt_rtf"))
+                self.assertIsNotNone(row.get("analysis_rtf"))
+                self.assertIsNotNone(row.get("remote_rtf"))
+            finally:
+                server.shutdown()
+                server.server_close()
+                processor.stop()
+
+    def test_mic_profile_written_for_transcript_drop(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cfg = RealtimeInsightConfig(
+                enabled=True,
+                chunk_seconds=10,
+                stt_request_timeout_sec=1.0,
+                stt_stage_timeout_sec=1.0,
+                stt_retry_count=1,
+                stt_retry_interval_sec=0.01,
+                analysis_request_timeout_sec=15.0,
+                analysis_stage_timeout_sec=60.0,
+                analysis_retry_count=2,
+                analysis_retry_interval_sec=0.01,
+                context_recent_required=0,
+                context_wait_timeout_sec_1=0.0,
+                context_wait_timeout_sec_2=0.0,
+                context_wait_timeout_sec=0.0,
+                context_target_chunks=18,
+                use_dual_context_wait=True,
+                mic_chunk_max_bytes=1024,
+                profile_enabled=True,
+            )
+            stage_processor = InsightStageProcessor(
+                session_dir=base,
+                config=cfg,
+                keywords=KeywordConfig(),
+                client=_SttTimeoutClient(),  # type: ignore[arg-type]
+                log_fn=lambda _msg: None,
+            )
+            processor = MicChunkProcessor(
+                stage_processor=stage_processor,
+                chunk_dir=base / "_rt_chunks_mic",
+                max_chunk_bytes=cfg.mic_chunk_max_bytes,
+                profile_enabled=cfg.profile_enabled,
+                log_fn=lambda _msg: None,
+            )
+            processor.start()
+
+            server = ThreadingHTTPServer(
+                ("127.0.0.1", 0),
+                build_mic_http_handler(processor=processor, upload_token="token-1"),
+            )
+            thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True)
+            thread.start()
+            try:
+                base_url = f"http://127.0.0.1:{server.server_port}"
+                ok = requests.post(
+                    f"{base_url}/api/mic/chunk",
+                    data=b"drop",
+                    headers={"X-Mic-Token": "token-1", "X-Chunk-Name": "drop.mp3"},
+                    timeout=3,
+                )
+                self.assertEqual(ok.status_code, 202)
+
+                deadline = time.time() + 3.0
+                while time.time() < deadline:
+                    metrics = requests.get(f"{base_url}/api/mic/metrics", timeout=3).json()
+                    if int(metrics.get("processed_total", 0)) >= 1:
+                        break
+                    time.sleep(0.05)
+
+                profile_rows = _read_jsonl(base / "realtime_profile.jsonl")
+                self.assertEqual(len(profile_rows), 1)
+                row = profile_rows[0]
+                self.assertEqual(str(row.get("final_status", "")), "transcript_drop_timeout")
+                self.assertEqual(str(row.get("stt_status", "")), "transcript_drop_timeout")
+                self.assertNotIn("analysis_request_ts_ms", row)
+                self.assertNotIn("analysis_response_ts_ms", row)
             finally:
                 server.shutdown()
                 server.server_close()

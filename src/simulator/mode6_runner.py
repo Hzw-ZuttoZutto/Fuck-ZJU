@@ -215,7 +215,7 @@ class _Mode6Processor(InsightStageProcessor):
         self._flush_due_arrivals()
         return list(sorted(self._transcripts, key=lambda item: item.chunk_seq))
 
-    def append_insight_event(self, event) -> None:
+    def append_insight_event(self, event, profile: dict[str, Any] | None = None) -> None:
         payload = event.to_json_dict()
         self._insight_payloads.append(payload)
         self.trace_writer(
@@ -228,8 +228,12 @@ class _Mode6Processor(InsightStageProcessor):
             }
         )
 
-    def transcribe_with_retry(self, chunk_path: Path) -> tuple[str, str, int, str, float]:
-        text, status, attempts, error, elapsed = super().transcribe_with_retry(chunk_path)
+    def transcribe_with_retry(
+        self,
+        chunk_path: Path,
+        profile: dict[str, Any] | None = None,
+    ) -> tuple[str, str, int, str, float]:
+        text, status, attempts, error, elapsed = super().transcribe_with_retry(chunk_path, profile=profile)
         self.last_stt_status = status
         self.last_stt_attempts = attempts
         self.trace_writer(
@@ -269,6 +273,7 @@ class _Mode6Processor(InsightStageProcessor):
         *,
         current_text: str,
         context_text: str,
+        profile: dict[str, Any] | None = None,
     ) -> tuple[InsightModelResult | None, str, int, str, float]:
         started = self.clock.monotonic()
         self.trace_writer(
@@ -281,6 +286,7 @@ class _Mode6Processor(InsightStageProcessor):
         result, status, attempts, error, elapsed = super().analyze_with_retry(
             current_text=current_text,
             context_text=context_text,
+            profile=profile,
         )
         elapsed = self.clock.monotonic() - started
         self.last_analysis_status = status

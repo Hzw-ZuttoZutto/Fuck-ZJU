@@ -5,7 +5,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from src.live.insight.models import (
     InsightEvent,
@@ -15,6 +15,10 @@ from src.live.insight.models import (
     format_local_ts,
 )
 from src.live.insight.openai_client import InsightModelResult, OpenAIInsightClient
+
+
+def _now_epoch_ms() -> int:
+    return int(time.time() * 1000)
 
 
 class InsightStageProcessor:
@@ -44,9 +48,17 @@ class InsightStageProcessor:
         self._text_log_path = self.session_dir / "realtime_insights.log"
         self._transcript_jsonl_path = self.session_dir / "realtime_transcripts.jsonl"
 
-    def process_chunk(self, chunk_seq: int, chunk_path: Path) -> None:
+    def process_chunk(self, chunk_seq: int, chunk_path: Path, profile: dict[str, Any] | None = None) -> None:
+        if profile is not None:
+            profile.setdefault("chunk_seq", int(chunk_seq))
+            profile.setdefault("chunk_file", chunk_path.name)
+            profile["stage_processor_started_ts_ms"] = _now_epoch_ms()
+
         now = datetime.now().astimezone()
-        transcript_text, stt_status, stt_attempt, stt_error, stt_elapsed_sec = self.transcribe_with_retry(chunk_path)
+        transcript_text, stt_status, stt_attempt, stt_error, stt_elapsed_sec = self.transcribe_with_retry(
+            chunk_path,
+            profile=profile,
+        )
         transcript_chunk = TranscriptChunk(
             chunk_seq=chunk_seq,
             chunk_file=chunk_path.name,
@@ -58,15 +70,23 @@ class InsightStageProcessor:
             elapsed_sec=stt_elapsed_sec,
         )
         self.append_transcript(transcript_chunk)
+        if profile is not None:
+            profile["transcript_written_ts_ms"] = _now_epoch_ms()
 
         if stt_status != "ok" or not transcript_text:
+            if profile is not None:
+                profile["final_status"] = stt_status
+                profile["final_error"] = stt_error
+                profile["stage_processor_finished_ts_ms"] = _now_epoch_ms()
             self._log(
                 f"[WARNING] [rt-insight] drop chunk seq={chunk_seq} file={chunk_path.name} "
                 f"reason={stt_status} error={stt_error}"
             )
             return
 
+        context_wait_started_ms = _now_epoch_ms()
         context_chunks = self.wait_and_collect_history(chunk_seq)
+        context_wait_finished_ms = _now_epoch_ms()
         context_text = self.render_history_context(
             context_chunks,
             chunk_seq=chunk_seq,
@@ -80,10 +100,18 @@ class InsightStageProcessor:
             chunk_seq=chunk_seq,
             target_chunks=max(1, int(self.config.context_target_chunks)),
         )
+        if profile is not None:
+            profile["context_wait_started_ts_ms"] = context_wait_started_ms
+            profile["context_wait_finished_ts_ms"] = context_wait_finished_ms
+            profile["context_wait_elapsed_ms"] = max(0, context_wait_finished_ms - context_wait_started_ms)
+            profile["context_reason"] = context_reason
+            profile["context_chunk_count"] = int(context_chunk_count)
+            profile["context_missing_ranges"] = list(context_missing_ranges)
 
         result, analysis_status, analysis_attempt, analysis_error, analysis_elapsed_sec = self.analyze_with_retry(
             current_text=transcript_text,
             context_text=context_text,
+            profile=profile,
         )
         if result is None:
             self.write_drop_insight(
@@ -97,7 +125,12 @@ class InsightStageProcessor:
                 analysis_elapsed_sec=analysis_elapsed_sec,
                 context_reason=context_reason,
                 context_missing_ranges=context_missing_ranges,
+                profile=profile,
             )
+            if profile is not None:
+                profile["final_status"] = analysis_status
+                profile["final_error"] = analysis_error
+                profile["stage_processor_finished_ts_ms"] = _now_epoch_ms()
             self._log(
                 f"[WARNING] [rt-insight] analysis dropped seq={chunk_seq} file={chunk_path.name} "
                 f"reason={analysis_status} error={analysis_error}"
@@ -114,7 +147,12 @@ class InsightStageProcessor:
             analysis_elapsed_sec=analysis_elapsed_sec,
             context_reason=context_reason,
             context_missing_ranges=context_missing_ranges,
+            profile=profile,
         )
+        if profile is not None:
+            profile["final_status"] = "ok"
+            profile["final_error"] = ""
+            profile["stage_processor_finished_ts_ms"] = _now_epoch_ms()
 
     def process_simulated_chunk(
         self,
@@ -214,8 +252,20 @@ class InsightStageProcessor:
             ),
         )
 
-    def transcribe_with_retry(self, chunk_path: Path) -> tuple[str, str, int, str, float]:
+    def transcribe_with_retry(
+        self,
+        chunk_path: Path,
+        profile: dict[str, Any] | None = None,
+    ) -> tuple[str, str, int, str, float]:
         if self.client is None:
+            if profile is not None:
+                now_ms = _now_epoch_ms()
+                profile["stt_request_ts_ms"] = now_ms
+                profile["stt_response_ts_ms"] = now_ms
+                profile["stt_status"] = "transcript_drop_error"
+                profile["stt_attempt_count"] = 0
+                profile["stt_error"] = "OpenAI client unavailable"
+                profile["stt_elapsed_sec"] = 0.0
             return "", "transcript_drop_error", 0, "OpenAI client unavailable", 0.0
 
         started = time.monotonic()
@@ -223,18 +273,34 @@ class InsightStageProcessor:
         deadline = started + max(1.0, float(self.config.stt_stage_timeout_sec))
         last_error = ""
         retry_interval_sec = max(0.0, float(getattr(self.config, "stt_retry_interval_sec", 0.2)))
+        first_request_marked = False
         for attempt in range(1, total_attempts + 1):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                elapsed = max(0.0, time.monotonic() - started)
+                status = "transcript_drop_timeout"
+                if profile is not None:
+                    now_ms = _now_epoch_ms()
+                    if not first_request_marked:
+                        profile["stt_request_ts_ms"] = now_ms
+                        first_request_marked = True
+                    profile["stt_response_ts_ms"] = now_ms
+                    profile["stt_status"] = status
+                    profile["stt_attempt_count"] = max(0, attempt - 1)
+                    profile["stt_error"] = last_error or "stage timeout"
+                    profile["stt_elapsed_sec"] = elapsed
                 return (
                     "",
-                    "transcript_drop_timeout",
+                    status,
                     attempt - 1,
                     last_error or "stage timeout",
-                    max(0.0, time.monotonic() - started),
+                    elapsed,
                 )
             per_call_timeout = min(max(1.0, float(self.config.stt_request_timeout_sec)), remaining)
             try:
+                if profile is not None and not first_request_marked:
+                    profile["stt_request_ts_ms"] = _now_epoch_ms()
+                    first_request_marked = True
                 text = self.client.transcribe_chunk(
                     chunk_path=chunk_path,
                     stt_model=self.config.stt_model,
@@ -243,7 +309,14 @@ class InsightStageProcessor:
                 text = text.strip()
                 if not text:
                     raise ValueError("transcript is empty")
-                return text, "ok", attempt, "", max(0.0, time.monotonic() - started)
+                elapsed = max(0.0, time.monotonic() - started)
+                if profile is not None:
+                    profile["stt_response_ts_ms"] = _now_epoch_ms()
+                    profile["stt_status"] = "ok"
+                    profile["stt_attempt_count"] = attempt
+                    profile["stt_error"] = ""
+                    profile["stt_elapsed_sec"] = elapsed
+                return text, "ok", attempt, "", elapsed
             except Exception as exc:
                 last_error = str(exc)
                 if attempt < total_attempts:
@@ -251,15 +324,34 @@ class InsightStageProcessor:
                     continue
         timed_out = time.monotonic() >= deadline or ("timeout" in last_error.lower())
         status = "transcript_drop_timeout" if timed_out else "transcript_drop_error"
-        return "", status, total_attempts, last_error, max(0.0, time.monotonic() - started)
+        elapsed = max(0.0, time.monotonic() - started)
+        if profile is not None:
+            now_ms = _now_epoch_ms()
+            if not first_request_marked:
+                profile["stt_request_ts_ms"] = now_ms
+            profile["stt_response_ts_ms"] = now_ms
+            profile["stt_status"] = status
+            profile["stt_attempt_count"] = total_attempts
+            profile["stt_error"] = last_error
+            profile["stt_elapsed_sec"] = elapsed
+        return "", status, total_attempts, last_error, elapsed
 
     def analyze_with_retry(
         self,
         *,
         current_text: str,
         context_text: str,
+        profile: dict[str, Any] | None = None,
     ) -> tuple[InsightModelResult | None, str, int, str, float]:
         if self.client is None:
+            if profile is not None:
+                now_ms = _now_epoch_ms()
+                profile["analysis_request_ts_ms"] = now_ms
+                profile["analysis_response_ts_ms"] = now_ms
+                profile["analysis_status"] = "analysis_drop_error"
+                profile["analysis_attempt_count"] = 0
+                profile["analysis_error"] = "OpenAI client unavailable"
+                profile["analysis_elapsed_sec"] = 0.0
             return None, "analysis_drop_error", 0, "OpenAI client unavailable", 0.0
 
         started = time.monotonic()
@@ -267,18 +359,34 @@ class InsightStageProcessor:
         deadline = started + max(1.0, float(self.config.analysis_stage_timeout_sec))
         last_error = ""
         retry_interval_sec = max(0.0, float(getattr(self.config, "analysis_retry_interval_sec", 0.2)))
+        first_request_marked = False
         for attempt in range(1, total_attempts + 1):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                elapsed = max(0.0, time.monotonic() - started)
+                status = "analysis_drop_timeout"
+                if profile is not None:
+                    now_ms = _now_epoch_ms()
+                    if not first_request_marked:
+                        profile["analysis_request_ts_ms"] = now_ms
+                        first_request_marked = True
+                    profile["analysis_response_ts_ms"] = now_ms
+                    profile["analysis_status"] = status
+                    profile["analysis_attempt_count"] = max(0, attempt - 1)
+                    profile["analysis_error"] = last_error or "stage timeout"
+                    profile["analysis_elapsed_sec"] = elapsed
                 return (
                     None,
-                    "analysis_drop_timeout",
+                    status,
                     attempt - 1,
                     last_error or "stage timeout",
-                    max(0.0, time.monotonic() - started),
+                    elapsed,
                 )
             per_call_timeout = min(max(1.0, float(self.config.analysis_request_timeout_sec)), remaining)
             try:
+                if profile is not None and not first_request_marked:
+                    profile["analysis_request_ts_ms"] = _now_epoch_ms()
+                    first_request_marked = True
                 result = self.client.analyze_text(
                     analysis_model=self.config.model,
                     keywords=self.keywords,
@@ -286,7 +394,14 @@ class InsightStageProcessor:
                     context_text=context_text,
                     timeout_sec=per_call_timeout,
                 )
-                return result, "ok", attempt, "", max(0.0, time.monotonic() - started)
+                elapsed = max(0.0, time.monotonic() - started)
+                if profile is not None:
+                    profile["analysis_response_ts_ms"] = _now_epoch_ms()
+                    profile["analysis_status"] = "ok"
+                    profile["analysis_attempt_count"] = attempt
+                    profile["analysis_error"] = ""
+                    profile["analysis_elapsed_sec"] = elapsed
+                return result, "ok", attempt, "", elapsed
             except Exception as exc:
                 last_error = str(exc)
                 if attempt < total_attempts:
@@ -294,7 +409,17 @@ class InsightStageProcessor:
                     continue
         timed_out = time.monotonic() >= deadline or ("timeout" in last_error.lower())
         status = "analysis_drop_timeout" if timed_out else "analysis_drop_error"
-        return None, status, total_attempts, last_error, max(0.0, time.monotonic() - started)
+        elapsed = max(0.0, time.monotonic() - started)
+        if profile is not None:
+            now_ms = _now_epoch_ms()
+            if not first_request_marked:
+                profile["analysis_request_ts_ms"] = now_ms
+            profile["analysis_response_ts_ms"] = now_ms
+            profile["analysis_status"] = status
+            profile["analysis_attempt_count"] = total_attempts
+            profile["analysis_error"] = last_error
+            profile["analysis_elapsed_sec"] = elapsed
+        return None, status, total_attempts, last_error, elapsed
 
     def wait_and_collect_history(self, chunk_seq: int) -> list[TranscriptChunk]:
         poll_interval_sec = max(0.01, float(getattr(self.config, "context_check_interval_sec", 0.2)))
@@ -524,6 +649,7 @@ class InsightStageProcessor:
         analysis_elapsed_sec: float = 0.0,
         context_reason: str = "",
         context_missing_ranges: list[str] | None = None,
+        profile: dict[str, Any] | None = None,
     ) -> None:
         summary = "分析超时已丢弃" if status == "analysis_drop_timeout" else "分析失败已丢弃"
         event = InsightEvent(
@@ -545,7 +671,7 @@ class InsightStageProcessor:
             context_reason=str(context_reason or "").strip(),
             context_missing_ranges=list(context_missing_ranges or []),
         )
-        self.append_insight_event(event)
+        self.append_insight_event(event, profile=profile)
 
     def write_success_insight(
         self,
@@ -559,6 +685,7 @@ class InsightStageProcessor:
         analysis_elapsed_sec: float = 0.0,
         context_reason: str = "",
         context_missing_ranges: list[str] | None = None,
+        profile: dict[str, Any] | None = None,
     ) -> None:
         summary = result.summary or "当前没有什么重要内容"
         context_summary = result.context_summary or "无重要内容"
@@ -579,9 +706,9 @@ class InsightStageProcessor:
             context_reason=str(context_reason or "").strip(),
             context_missing_ranges=list(context_missing_ranges or []),
         )
-        self.append_insight_event(event)
+        self.append_insight_event(event, profile=profile)
 
-    def append_insight_event(self, event: InsightEvent) -> None:
+    def append_insight_event(self, event: InsightEvent, profile: dict[str, Any] | None = None) -> None:
         payload = event.to_json_dict()
         with self._io_lock:
             with self._insight_jsonl_path.open("a", encoding="utf-8") as handle:
@@ -594,11 +721,16 @@ class InsightStageProcessor:
                 handle.write(f"具体上下文：{event.context_summary}\n")
                 handle.write("\n")
 
+        if profile is not None:
+            profile["insight_logged_ts_ms"] = _now_epoch_ms()
+
         level = "[ALERT]" if event.urgency_percent >= int(self.config.alert_threshold) else "[INFO]"
         self._log(
             f"{level} [rt-insight] seq={event.chunk_seq} chunk={event.chunk_file} "
             f"urgency={event.urgency_percent}% status={event.status} summary={event.summary}"
         )
+        if profile is not None:
+            profile["insight_console_log_ts_ms"] = _now_epoch_ms()
 
     def mark_and_check_recovery(self, chunk_seq: int) -> bool:
         with self._state_lock:
