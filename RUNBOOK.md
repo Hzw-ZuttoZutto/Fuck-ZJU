@@ -79,7 +79,7 @@ python -m unittest discover -s tests -v
 ```bash
 python -m src.main scan \
   --teacher '王强' \
-  --title '测试标题' \
+  --title '编译原理' \
   --center 83650 \
   --radius 0 \
   --workers 1 \
@@ -92,7 +92,7 @@ python -m src.main scan \
 ```bash
 python -m src.main scan \
   --teacher '王强' \
-  --title '测试标题' \
+  --title '编译原理' \
   --center 83650 \
   --radius 0 \
   --require-live \
