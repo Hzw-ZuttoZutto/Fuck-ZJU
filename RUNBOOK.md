@@ -13,7 +13,7 @@
 python -m src.main <subcommand> ...
 ```
 
-`find_course_id.py` 已废弃，仅用于提示迁移。
+Legacy script entrypoint has been removed; always use `python -m src.main <subcommand> ...`.
 
 ## 2. 项目结构（关键文件）
 - `src/main.py`：总入口
@@ -435,13 +435,6 @@ python -m src.main mic-publish \
 lsof -i :8765
 # 或改用新端口
 python -m src.main watch ... --port 18765
-```
-
-### 6.6 旧命令失效
-`python find_course_id.py ...` 返回迁移提示属于预期，改用：
-
-```bash
-python -m src.main ...
 ```
 
 ## 7. 参数调优建议
