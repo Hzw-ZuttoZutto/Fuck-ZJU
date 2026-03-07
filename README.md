@@ -40,12 +40,12 @@ python -m py_compile $(find src tests -name '*.py')
 python -m unittest discover -s tests -v
 
 # 扫描课程
-python -m src.main scan --teacher '王强' --title '测试标题' --center 83650 --radius 0 --workers 1 --retries 1 --verbose
+python -m src.main scan --teacher '王强' --title '编译原理' --center 83650 --radius 0 --workers 1 --retries 1 --verbose
 
 # 扫描课程（仅保留“直播中”）
 python -m src.main scan \
   --teacher '王强' \
-  --title '测试标题' \
+  --title '编译原理' \
   --center 83650 \
   --radius 0 \
   --require-live \
