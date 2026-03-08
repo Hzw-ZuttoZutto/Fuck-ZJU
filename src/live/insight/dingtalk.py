@@ -3,13 +3,15 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import json
 import queue
 import re
 import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable
+from pathlib import Path
+from typing import Any, Callable
 from urllib.parse import quote_plus
 
 from src.common.http import get_thread_session
@@ -33,6 +35,7 @@ class DingTalkNotifier:
         cooldown_sec: float = 30.0,
         send_timeout_sec: float = 5.0,
         send_retry_count: int = 5,
+        trace_path: Path | None = None,
         metadata: DingTalkNotifierMetadata | None = None,
         log_fn: Callable[[str], None] | None = None,
     ) -> None:
@@ -41,13 +44,15 @@ class DingTalkNotifier:
         self.cooldown_sec = max(0.0, float(cooldown_sec))
         self.send_timeout_sec = max(1.0, float(send_timeout_sec))
         self.send_retry_count = max(1, int(send_retry_count))
+        self.trace_path = trace_path
         self.metadata = metadata or DingTalkNotifierMetadata()
         self._log_fn = log_fn or print
 
-        self._queue: queue.Queue[InsightEvent | None] = queue.Queue()
+        self._queue: queue.Queue[tuple[InsightEvent, dict[str, int | None]] | None] = queue.Queue()
         self._stop_event = threading.Event()
         self._worker: threading.Thread | None = None
         self._state_lock = threading.Lock()
+        self._trace_lock = threading.Lock()
         self._last_accepted_at = 0.0
 
         if not self.webhook:
@@ -55,7 +60,14 @@ class DingTalkNotifier:
         if not self.secret:
             raise ValueError("DingTalk secret is empty")
 
-    def notify_event(self, event: InsightEvent) -> bool:
+    def notify_event(
+        self,
+        event: InsightEvent,
+        *,
+        pre_send_ts_ms: int | None = None,
+        pre_send_rel_ms: int | None = None,
+        stream_t0_ms: int | None = None,
+    ) -> bool:
         if not event.important:
             return False
         if not self._accept_by_cooldown():
@@ -64,8 +76,13 @@ class DingTalkNotifier:
                 f"window={self.cooldown_sec:.1f}s"
             )
             return False
+        trace_context = {
+            "pre_send_ts_ms": _to_non_negative_int(pre_send_ts_ms),
+            "pre_send_rel_ms": _to_non_negative_int(pre_send_rel_ms),
+            "stream_t0_ms": _to_non_negative_int(stream_t0_ms),
+        }
         self._ensure_worker()
-        self._queue.put(event)
+        self._queue.put((event, trace_context))
         return True
 
     def stop(self) -> None:
@@ -96,7 +113,8 @@ class DingTalkNotifier:
             try:
                 if item is None:
                     return
-                self._deliver_event(item)
+                event, trace_context = item
+                self._deliver_event(event, trace_context=trace_context)
             finally:
                 self._queue.task_done()
 
@@ -108,12 +126,19 @@ class DingTalkNotifier:
             self._last_accepted_at = now
             return True
 
-    def _deliver_event(self, event: InsightEvent) -> None:
+    def _deliver_event(self, event: InsightEvent, *, trace_context: dict[str, int | None] | None = None) -> None:
         payload = self._build_payload(event)
         last_error = ""
         for attempt in range(1, self.send_retry_count + 1):
             try:
                 self._send_payload(payload)
+                self._append_trace(
+                    event=event,
+                    status="sent",
+                    attempt_count=attempt,
+                    error="",
+                    trace_context=trace_context,
+                )
                 self._log(
                     f"[rt-dingtalk] sent seq={event.chunk_seq} chunk={event.chunk_file} "
                     f"attempt={attempt} recovery={event.is_recovery}"
@@ -126,6 +151,13 @@ class DingTalkNotifier:
                 delay_sec = min(16.0, float(2 ** (attempt - 1)))
                 if self._wait_backoff(delay_sec):
                     return
+        self._append_trace(
+            event=event,
+            status="failed",
+            attempt_count=self.send_retry_count,
+            error=last_error,
+            trace_context=trace_context,
+        )
         self._log(
             f"[rt-dingtalk] send failed seq={event.chunk_seq} chunk={event.chunk_file} "
             f"attempts={self.send_retry_count} error={last_error}"
@@ -288,5 +320,60 @@ class DingTalkNotifier:
     def _wait_backoff(self, delay_sec: float) -> bool:
         return self._stop_event.wait(max(0.0, float(delay_sec)))
 
+    def _append_trace(
+        self,
+        *,
+        event: InsightEvent,
+        status: str,
+        attempt_count: int,
+        error: str,
+        trace_context: dict[str, int | None] | None,
+    ) -> None:
+        path = self.trace_path
+        if path is None:
+            return
+        payload: dict[str, Any] = {
+            "ts_local": event.ts.astimezone().isoformat(),
+            "chunk_seq": int(event.chunk_seq),
+            "chunk_file": str(event.chunk_file),
+            "asr_sentence_id": str(event.asr_sentence_id or ""),
+            "asr_end_ms": _to_non_negative_int(event.asr_end_ms),
+            "status": str(status),
+            "attempt_count": max(1, int(attempt_count)),
+            "send_done_ts_ms": int(time.time() * 1000),
+            "error": str(error or ""),
+        }
+        if trace_context is not None:
+            payload["pre_send_ts_ms"] = _to_non_negative_int(trace_context.get("pre_send_ts_ms"))
+            payload["pre_send_rel_ms"] = _to_non_negative_int(trace_context.get("pre_send_rel_ms"))
+            payload["stream_t0_ms"] = _to_non_negative_int(trace_context.get("stream_t0_ms"))
+        else:
+            payload["pre_send_ts_ms"] = None
+            payload["pre_send_rel_ms"] = None
+            payload["stream_t0_ms"] = None
+
+        with self._trace_lock:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, ensure_ascii=False))
+                handle.write("\n")
+
     def _log(self, msg: str) -> None:
         self._log_fn(msg)
+
+
+def _to_non_negative_int(value: object) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    text = str(value).strip()
+    if not text:
+        return None
+    if not re.fullmatch(r"-?\d+", text):
+        return None
+    try:
+        parsed = int(text)
+    except ValueError:
+        return None
+    return parsed if parsed >= 0 else None

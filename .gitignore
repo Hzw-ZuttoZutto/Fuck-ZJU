@@ -33,7 +33,7 @@ dist/
 debug_doc
 tests/simulator/mp3_inputs/标准测试用例.mp3
 # tests/simulator/runs
-MYBOOK.md
+
 
 tests/simulator/runs/*
 !tests/simulator/runs/.gitkeep

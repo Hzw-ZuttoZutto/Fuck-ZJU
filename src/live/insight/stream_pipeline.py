@@ -16,6 +16,10 @@ from src.live.insight.stage_processor import InsightStageProcessor
 from src.live.insight.stream_asr import DashScopeRealtimeAsrClient, RealtimeAsrEvent
 
 
+def _now_epoch_ms() -> int:
+    return int(time.time() * 1000)
+
+
 def load_hotwords(path: Path, *, log_fn: Callable[[str], None]) -> list[str]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -62,6 +66,7 @@ class StreamRealtimeInsightPipeline:
         self._reconnecting = False
         self._reconnect_delay_sec = 1.0
         self._started = False
+        self._stream_t0_ms: int | None = None
 
         self._final_seq = 0
         self._executor = ThreadPoolExecutor(
@@ -78,6 +83,7 @@ class StreamRealtimeInsightPipeline:
             notifier=notifier,
             log_fn=self._log,
             stop_event=self._stop_event,
+            stream_t0_provider=self.get_stream_t0_ms,
         )
         self._asr_events_path = self.session_dir / "realtime_asr_events.jsonl"
 
@@ -114,10 +120,25 @@ class StreamRealtimeInsightPipeline:
         if not self._started:
             return False
         try:
+            if data:
+                self.mark_server_frame_received()
             return self._asr_client.send_audio_frame(data)
         except Exception as exc:
             self._on_asr_error(f"send frame failed: {exc}")
             return False
+
+    def mark_server_frame_received(self, *, now_ms: int | None = None) -> int | None:
+        current = _now_epoch_ms() if now_ms is None else int(now_ms)
+        if current < 0:
+            return None
+        with self._state_lock:
+            if self._stream_t0_ms is None:
+                self._stream_t0_ms = current
+            return self._stream_t0_ms
+
+    def get_stream_t0_ms(self) -> int | None:
+        with self._state_lock:
+            return self._stream_t0_ms
 
     def _on_asr_event(self, event: RealtimeAsrEvent) -> None:
         payload = event.to_json_dict()

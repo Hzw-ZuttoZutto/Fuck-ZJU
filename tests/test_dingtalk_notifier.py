@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import threading
 import unittest
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from unittest import mock
 from urllib.parse import parse_qs, urlparse
 
@@ -143,6 +145,74 @@ class DingTalkNotifierTests(unittest.TestCase):
             self.assertTrue(notifier.notify_event(self._event()))
 
         self.assertEqual(notifier._queue.qsize(), 2)
+
+    def test_notify_event_keeps_trace_context(self) -> None:
+        notifier = DingTalkNotifier(
+            webhook="https://example.test/robot/send?access_token=x",
+            secret="sec-123",
+            cooldown_sec=30.0,
+            log_fn=lambda _msg: None,
+        )
+
+        with mock.patch.object(notifier, "_ensure_worker", return_value=None), mock.patch(
+            "src.live.insight.dingtalk.time.monotonic",
+            return_value=100.0,
+        ):
+            accepted = notifier.notify_event(
+                self._event(),
+                pre_send_ts_ms=2000,
+                pre_send_rel_ms=450,
+                stream_t0_ms=1550,
+            )
+        self.assertTrue(accepted)
+        queued = notifier._queue.get_nowait()
+        assert queued is not None
+        event, ctx = queued
+        self.assertEqual(event.chunk_seq, 7)
+        self.assertEqual(ctx["pre_send_ts_ms"], 2000)
+        self.assertEqual(ctx["pre_send_rel_ms"], 450)
+        self.assertEqual(ctx["stream_t0_ms"], 1550)
+
+    def test_deliver_event_writes_trace_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            trace_path = Path(td) / "realtime_dingtalk_trace.jsonl"
+            notifier = DingTalkNotifier(
+                webhook="https://example.test/robot/send?access_token=x",
+                secret="sec-123",
+                send_retry_count=2,
+                trace_path=trace_path,
+                log_fn=lambda _msg: None,
+            )
+
+            with mock.patch.object(notifier, "_send_payload", return_value=None):
+                notifier._deliver_event(
+                    self._event(),
+                    trace_context={"pre_send_ts_ms": 5000, "pre_send_rel_ms": 300, "stream_t0_ms": 4700},
+                )
+
+            with mock.patch.object(notifier, "_send_payload", side_effect=RuntimeError("boom")), mock.patch.object(
+                notifier,
+                "_wait_backoff",
+                return_value=False,
+            ):
+                notifier._deliver_event(
+                    self._event(chunk_file="chunk_20260101_020304.mp3"),
+                    trace_context={"pre_send_ts_ms": 8000, "pre_send_rel_ms": 600, "stream_t0_ms": 7400},
+                )
+
+            rows = [
+                json.loads(line)
+                for line in trace_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0]["status"], "sent")
+            self.assertEqual(rows[0]["attempt_count"], 1)
+            self.assertEqual(rows[0]["asr_sentence_id"], "")
+            self.assertEqual(rows[0]["pre_send_rel_ms"], 300)
+            self.assertEqual(rows[1]["status"], "failed")
+            self.assertEqual(rows[1]["attempt_count"], 2)
+            self.assertIn("boom", rows[1]["error"])
 
     def test_deliver_event_retries_five_times(self) -> None:
         _DingTalkHandler.request_count = 0

@@ -1019,6 +1019,7 @@ def run_mic_listen(args: argparse.Namespace) -> int:
         return 1
 
     notifier = None
+    dingtalk_trace_path = session_dir / "realtime_dingtalk_trace.jsonl"
     if config.dingtalk_enabled:
         webhook, secret, dingtalk_error = resolve_dingtalk_bot_settings()
         if dingtalk_error:
@@ -1028,6 +1029,7 @@ def run_mic_listen(args: argparse.Namespace) -> int:
             webhook=webhook,
             secret=secret,
             cooldown_sec=config.dingtalk_cooldown_sec,
+            trace_path=dingtalk_trace_path,
             log_fn=print,
         )
     if pipeline_mode == "stream" and notifier is None:
@@ -1101,6 +1103,7 @@ def run_mic_listen(args: argparse.Namespace) -> int:
             print(f"[mic-listen] profile_log={session_dir / 'realtime_profile.jsonl'}")
         if config.dingtalk_enabled:
             print(f"[mic-listen] DingTalk alert enabled cooldown={config.dingtalk_cooldown_sec:.1f}s")
+            print(f"[mic-listen] dingtalk_trace_log={dingtalk_trace_path}")
         print("[mic-listen] Press Ctrl+C to stop.")
         try:
             server.serve_forever(poll_interval=0.5)

@@ -83,8 +83,8 @@ class _FakeNotifier:
         self.events = []
         self.stopped = False
 
-    def notify_event(self, event) -> bool:
-        self.events.append(event)
+    def notify_event(self, event, **kwargs) -> bool:
+        self.events.append((event, dict(kwargs)))
         return True
 
     def stop(self) -> None:
@@ -193,8 +193,55 @@ class StreamPipelineTests(unittest.TestCase):
             transcript_rows = _read_jsonl(base / "realtime_transcripts.jsonl")
             self.assertEqual(len(transcript_rows), 2)
             self.assertGreaterEqual(len(notifier.events), 1)
-            reasons = [str(getattr(event, "reason", "")) for event in notifier.events]
+            reasons = [str(getattr(event, "reason", "")) for event, _meta in notifier.events]
             self.assertIn("stream_queue_drop_oldest", reasons)
+
+    def test_final_event_carries_pre_send_relative_timestamps(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            hotwords = base / "hotwords.json"
+            hotwords.write_text('["签到"]', encoding="utf-8")
+            config = self._build_config(hotwords)
+            notifier = _FakeNotifier()
+            pipeline = StreamRealtimeInsightPipeline(
+                session_dir=base,
+                config=config,
+                keywords=KeywordConfig(),
+                llm_client=_FakeLlmClient(),
+                dashscope_api_key="k",
+                notifier=notifier,  # type: ignore[arg-type]
+                asr_client=_FakeAsrClient(),  # type: ignore[arg-type]
+                log_fn=lambda _msg: None,
+            )
+            pipeline.start()
+            pipeline.mark_server_frame_received(now_ms=1000)
+            pipeline._on_asr_event(
+                RealtimeAsrEvent(
+                    global_seq=1,
+                    provider_sentence_id="s-1",
+                    ts_local="20260308_120000",
+                    text="test final",
+                    event_type="final",
+                    is_final=True,
+                    start_ms=20,
+                    end_ms=120,
+                    model="paraformer-realtime-v2",
+                    scene="zh",
+                )
+            )
+
+            deadline = time.time() + 2.0
+            while time.time() < deadline and not notifier.events:
+                time.sleep(0.05)
+            pipeline.stop()
+
+            self.assertTrue(notifier.events)
+            event, meta = notifier.events[0]
+            self.assertEqual(getattr(event, "asr_end_ms", None), 120)
+            self.assertEqual(meta.get("stream_t0_ms"), 1000)
+            self.assertIsInstance(meta.get("pre_send_ts_ms"), int)
+            self.assertIsInstance(meta.get("pre_send_rel_ms"), int)
+            self.assertEqual(int(meta["pre_send_rel_ms"]), int(meta["pre_send_ts_ms"]) - int(meta["stream_t0_ms"]))
 
     def test_load_hotwords_raises_when_missing(self) -> None:
         with tempfile.TemporaryDirectory() as td:

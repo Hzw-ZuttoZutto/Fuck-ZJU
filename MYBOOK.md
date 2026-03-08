@@ -1,33 +1,33 @@
-﻿  # MYBOOK: 独立麦克风上游无阻碍运行手册
+﻿# MYBOOK（精简流程版）：本地 PowerShell + `ssh wsl` 跑 Stream Mic（含钉钉）
 
-目标：稳定跑通 `mic-listen + ssh -L + mic-publish`，并能快速确认链路是否打通。
+目标：只保留必要流程，稳定跑通：
+`mic-publish(stream) -> mic-listen(stream) -> 分析 -> DingTalk sent`
 
-## 0. 固定参数
-- 集群项目目录：`/home/placitudo/fuckclass`
-- 集群 Python：`/home/placitudo/APP/miniconda3/envs/fuckclass/bin/python`
-- 本机 Python：`D:\All_The_App\anaconda3\envs\fuckclass\python.exe`
-- 本机 ffmpeg：`D:\All_The_App\Anaconda3\envs\fuckclass\Library\bin\ffmpeg.exe`
-- 上行端口：`18765`
-- 上传 token：`YOUR_TOKEN`
 
-## 1. 集群端（终端 A）
-先登录：
+
+1. 本机路径（按你机器当前配置）：
+- Python: `D:\All_The_App\anaconda3\envs\fuckclass\python.exe`
+- ffmpeg: `D:\All_The_App\Anaconda3\envs\fuckclass\Library\bin\ffmpeg.exe`
+
+## 1. 终端 A（先开）：远程 `mic-listen`
 
 ```bash
-ssh clusters
-```
+cd /home/hzw/repo_collection/Fuck-ZJU
+source /home/hzw/APP/miniconda3/etc/profile.d/conda.sh
+conda activate fuckclass
+set -a; source .account; set +a
 
-然后执行：
+TOKEN="micstream001"
+SESSION_DIR="mic_session_$(date +%Y%m%d_%H%M%S)"
 
-```bash
-cd /home/placitudo/fuckclass
-/home/placitudo/APP/miniconda3/envs/fuckclass/bin/python -m src.main mic-listen \
+python -m src.main mic-listen \
   --host 127.0.0.1 \
   --port 18765 \
-  --mic-upload-token YOUR_TOKEN \
+  --session-dir "$SESSION_DIR" \
+  --mic-upload-token "$TOKEN" \
   --rt-pipeline-mode stream \
   --rt-dingtalk-enabled \
-  --rt-dingtalk-cooldown-sec 30 \
+  --rt-dingtalk-cooldown-sec 0 \
   --rt-asr-scene zh \
   --rt-asr-model fun-asr-realtime \
   --rt-hotwords-file config/realtime_hotwords.json \
@@ -47,72 +47,47 @@ cd /home/placitudo/fuckclass
   --rt-context-wait-timeout-sec-2 5
 ```
 
-不要关闭这个终端。
+看到以下输出即正常：
+- `session_dir=...`
+- `dingtalk_trace_log=.../realtime_dingtalk_trace.jsonl`
 
-## 2. 本机端口转发（终端 B, PowerShell）
+## 2. 终端 B：本地端口转发
 
 ```powershell
-chcp 65001 > $null
-$env:PYTHONIOENCODING='utf-8'
-ssh -N -L 18765:127.0.0.1:18765 clusters
+ssh -N -L 18765:127.0.0.1:18765 wsl
 ```
 
-不要关闭这个终端。
+## 3. 终端 C：本地 `mic-publish(stream)`
 
-## 3. 本机发布麦克风（终端 C, PowerShell）
-先列设备（确认设备名必须包含 `®`）：
+先查设备名：
 
 ```powershell
 $py='D:\All_The_App\anaconda3\envs\fuckclass\python.exe'
 $ff='D:\All_The_App\Anaconda3\envs\fuckclass\Library\bin\ffmpeg.exe'
-
-chcp 65001 > $null
-$env:PYTHONIOENCODING='utf-8'
 
 & $py -m src.main mic-list-devices --ffmpeg-bin $ff
 ```
 
-再启动发布：
+启动发布（`$token` 必须与终端 A 的 `TOKEN` 一致）：
 
 ```powershell
 $py='D:\All_The_App\anaconda3\envs\fuckclass\python.exe'
 $ff='D:\All_The_App\Anaconda3\envs\fuckclass\Library\bin\ffmpeg.exe'
+$token='micstream001'
+$device='麦克风阵列 (适用于数字麦克风的英特尔® 智音技术)'
 
-chcp 65001 > $null
-$env:PYTHONIOENCODING='utf-8'
-
-& $py -m src.main mic-publish --target-url http://127.0.0.1:18765 --mic-upload-token YOUR_TOKEN --device "麦克风阵列 (适用于数字麦克风的英特尔® 智音技术)" --rt-pipeline-mode stream --stream-frame-duration-ms 120 --request-timeout-sec 20 --retry-base-sec 1.0 --retry-max-sec 12.0 --ffmpeg-bin $ff
-
+& $py -m src.main mic-publish --target-url http://127.0.0.1:18765 --mic-upload-token $token --device $device --rt-pipeline-mode stream --stream-frame-duration-ms 120 --request-timeout-sec 20 --retry-base-sec 1.0 --retry-max-sec 12.0 --ffmpeg-bin $ff
 ```
 
-## 4. 链路验证（终端 D, PowerShell）
+## 4. 通过标准（只看这两条）
 
-```powershell
-$py='D:\All_The_App\anaconda3\envs\fuckclass\python.exe'
-& $py -c "import requests;print(requests.get('http://127.0.0.1:18765/api/mic/metrics',timeout=5).json())"
-```
+在终端 A 日志中：
+- 出现 `[rt-dingtalk] sent ...`
+- 没有 `[rt-dingtalk] send failed ...`
 
-判定标准：
-- `uploaded_total` 持续增长
-- `accepted_total` 跟随增长
-- `processed_total` 跟随增长
-- `auth_failures=0`
-- `process_failures` 不持续增长
+## 5. 停止
 
-## 5. 常见卡点（你这次踩到的）
-- 本机和集群没用同一个 `fuckclass` 环境。
-- 本机 `ffmpeg` 不在 PATH，必须加 `--ffmpeg-bin`。
-- 设备名写成 `?` 而不是 `®`，`ffmpeg` 会秒退。
-- 未设置 UTF-8 控制台，打印设备名可能触发 `UnicodeEncodeError`。
-- 集群没设置 `OPENAI_API_KEY`。
-
-## 6. 停止与清理
-- 终端 C 按 `Ctrl+C`（停 `mic-publish`）
-- 终端 B 按 `Ctrl+C`（停 SSH 转发）
-- 终端 A 按 `Ctrl+C`（停 `mic-listen`）
-
-可选清理本地切片：
-
-```powershell
-Remove-Item -Recurse -Force .mic_publish_chunks_run_01
-```
+按顺序 `Ctrl+C`：
+1. 终端 C（publish）
+2. 终端 B（端口转发）
+3. 终端 A（listen）

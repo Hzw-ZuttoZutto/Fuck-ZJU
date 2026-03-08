@@ -34,6 +34,7 @@ class InsightStageProcessor:
         notifier: DingTalkNotifier | None = None,
         log_fn: Callable[[str], None] | None = None,
         stop_event: threading.Event | None = None,
+        stream_t0_provider: Callable[[], int | None] | None = None,
     ) -> None:
         self.session_dir = session_dir
         self.config = config
@@ -42,6 +43,7 @@ class InsightStageProcessor:
         self.notifier = notifier
         self._log_fn = log_fn or print
         self._stop_event = stop_event
+        self._stream_t0_provider = stream_t0_provider
 
         self._io_lock = threading.Lock()
         self._state_lock = threading.Lock()
@@ -1003,11 +1005,41 @@ class InsightStageProcessor:
         if self.notifier is None or not bool(getattr(self.config, "dingtalk_enabled", False)):
             return
         try:
-            self.notifier.notify_event(event)
+            pre_send_ts_ms = _now_epoch_ms()
+            stream_t0_ms = self._resolve_stream_t0_ms()
+            pre_send_rel_ms: int | None = None
+            if stream_t0_ms is not None:
+                pre_send_rel_ms = max(0, int(pre_send_ts_ms) - int(stream_t0_ms))
+            try:
+                self.notifier.notify_event(
+                    event,
+                    pre_send_ts_ms=pre_send_ts_ms,
+                    pre_send_rel_ms=pre_send_rel_ms,
+                    stream_t0_ms=stream_t0_ms,
+                )
+            except TypeError:
+                # Backward compatibility for custom notifiers that still use notify_event(event).
+                self.notifier.notify_event(event)
         except Exception as exc:
             self._log(
                 f"[rt-dingtalk] enqueue failed seq={event.chunk_seq} chunk={event.chunk_file} error={exc}"
             )
+
+    def _resolve_stream_t0_ms(self) -> int | None:
+        provider = self._stream_t0_provider
+        if provider is None:
+            return None
+        try:
+            value = provider()
+        except Exception:
+            return None
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            out = int(value)
+        except (TypeError, ValueError):
+            return None
+        return out if out >= 0 else None
 
     def _log(self, msg: str) -> None:
         self._log_fn(msg)
