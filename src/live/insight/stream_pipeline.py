@@ -13,18 +13,16 @@ from src.live.insight.dingtalk import DingTalkNotifier
 from src.live.insight.models import InsightEvent, KeywordConfig, RealtimeInsightConfig
 from src.live.insight.openai_client import OpenAIInsightClient
 from src.live.insight.stage_processor import InsightStageProcessor
-from src.live.insight.stream_asr import DashScopeRealtimeAsrClient, RealtimeAsrEvent, resolve_default_asr_model
+from src.live.insight.stream_asr import DashScopeRealtimeAsrClient, RealtimeAsrEvent
 
 
 def load_hotwords(path: Path, *, log_fn: Callable[[str], None]) -> list[str]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except OSError:
-        log_fn(f"[rt-stream-asr] hotwords file not found/readable: {path}; using empty hotwords")
-        return []
-    except json.JSONDecodeError:
-        log_fn(f"[rt-stream-asr] hotwords file is invalid JSON: {path}; using empty hotwords")
-        return []
+    except OSError as exc:
+        raise ValueError(f"hotwords file not found/readable: {path} ({exc})") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"hotwords file is invalid JSON array: {path}") from exc
 
     if isinstance(payload, list):
         out: list[str] = []
@@ -32,9 +30,9 @@ def load_hotwords(path: Path, *, log_fn: Callable[[str], None]) -> list[str]:
             text = str(item).strip()
             if text:
                 out.append(text)
+        log_fn(f"[rt-stream-asr] loaded hotwords file: {path} items={len(out)}")
         return out
-    log_fn(f"[rt-stream-asr] hotwords file root is not JSON array: {path}; using empty hotwords")
-    return []
+    raise ValueError(f"hotwords file root is not JSON array: {path}")
 
 
 class StreamRealtimeInsightPipeline:
@@ -83,7 +81,9 @@ class StreamRealtimeInsightPipeline:
         )
         self._asr_events_path = self.session_dir / "realtime_asr_events.jsonl"
 
-        model = (self.config.asr_model or "").strip() or resolve_default_asr_model(self.config.asr_scene)
+        model = (self.config.asr_model or "").strip()
+        if not model:
+            raise ValueError("stream ASR model is empty; pass --rt-asr-model")
         self.config.asr_model = model
         hotwords = load_hotwords(self.config.hotwords_file, log_fn=self._log)
         self._asr_client = asr_client or DashScopeRealtimeAsrClient(

@@ -68,7 +68,9 @@ class DashScopeRealtimeAsrClient:
         log_fn: Callable[[str], None] | None = None,
     ) -> None:
         self.scene = str(scene or "zh").strip().lower() or "zh"
-        self.model = str(model or "").strip() or resolve_default_asr_model(self.scene)
+        self.model = str(model or "").strip()
+        if not self.model:
+            raise ValueError("stream ASR model is empty; pass --rt-asr-model")
         self.api_key = str(api_key or "").strip()
         self.endpoint = str(endpoint or "").strip() or "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
         self.hotwords = [str(item).strip() for item in list(hotwords or []) if str(item).strip()]
@@ -92,7 +94,7 @@ class DashScopeRealtimeAsrClient:
             dashscope.api_key = self.api_key
             dashscope.base_websocket_api_url = self.endpoint
             asr_module = importlib.import_module("dashscope.audio.asr")
-            if self.scene == "multi" or self.model.startswith("gummy-"):
+            if self.model.startswith("gummy-"):
                 self._client = self._build_multi_client(asr_module)
             else:
                 self._client = self._build_recognition_client(asr_module)

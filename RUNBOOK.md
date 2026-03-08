@@ -51,6 +51,8 @@ OPENAI_API_KEY=你的OpenAIKey
 # 2) AIHubMix key（OpenAI 兼容网关）
 # AIHUBMIX_API_KEY=你的AIHubMixKey
 # OPENAI_BASE_URL=https://aihubmix.com/v1
+# stream ASR 必填
+# DASHSCOPE_API_KEY=你的DashScopeKey
 # 可选：钉钉机器人告警
 # DINGTALK_WEBHOOK=https://oapi.dingtalk.com/robot/send?access_token=...
 # DINGTALK_SECRET=SEC...
@@ -199,12 +201,17 @@ python -m src.main watch \
 - 实时音频切片目录：`_rt_chunks/`
 - 实时流程：`10s音频 -> STT转写 -> 文本上下文分析`
 - stream 流式模式：`--rt-pipeline-mode stream`，流程为 `音频流 -> 句级ASR(partial/final) -> 句级滑窗分析`
-- stream 默认模型映射：`zh -> paraformer-realtime-v2`，`multi -> gummy-realtime-v1`，可用 `--rt-asr-model` 覆盖
+- `watch` 仅在 `--rt-insight-enabled` 时做模型必填校验：chunk 必须显式传 `--rt-stt-model`，stream 必须显式传 `--rt-asr-model`
+- `mic-listen` 启动即做模型必填校验：chunk 必须显式传 `--rt-stt-model`，stream 必须显式传 `--rt-asr-model`
+- stream 热词文件默认 `config/realtime_hotwords.json`，会强校验：文件不可读/非 JSON 数组将启动失败；空数组 `[]` 合法
+- stream 路由规则：仅 `gummy-*` 走翻译实时客户端；`paraformer-*` 与 `fun-asr-*` 走识别实时客户端
+- `scene=multi + paraformer-realtime-v2` 仅输出识别文本，`translation_text` 为空
 - stream 模式要求钉钉可用（未配置 `--rt-dingtalk-enabled` 与凭据会启动失败）
 - 关键词配置默认使用 `config/realtime_keywords.json`，支持 `version: 2` 分组规则；新增事件分组只需追加 `groups` 项。
 - 旧版 `important_terms/important_phrases/negative_terms` 配置仍兼容。
 - 可选钉钉告警：通过 `--rt-dingtalk-enabled` 开启，仅转发 `important=true` 事件。
 - 钉钉凭据读取：`.account` 中 `dingtalk_webhook` / `dingtalk_secret`，或环境变量 `DINGTALK_WEBHOOK` / `DINGTALK_SECRET`。
+- DashScope 凭据读取：`.account` 中 `DASHSCOPE_API_KEY` / `dashscope_api_key`，或环境变量 `DASHSCOPE_API_KEY`。
 
 ### 4.3 分析仿真器（simulate）
 用途：对实时分析链路做可控离线仿真，覆盖 5 种模式。
@@ -360,6 +367,17 @@ python -m src.main mic-publish \
 - `realtime_insights.jsonl`
 - `realtime_insights.log`
 - 若开启钉钉告警，默认 `30s` 冷却窗口内只接受第一条紧急提醒。
+
+### 4.6 stream ASR 连通性与延迟实验
+
+```bash
+python scripts/stream_asr_experiment.py --repeat 5
+```
+
+输出：
+
+- `reports/stream_asr_experiment_<ts>.md`
+- `reports/stream_asr_experiment_<ts>.json`
 
 ## 5. 指标说明（`/api/metrics`）
 

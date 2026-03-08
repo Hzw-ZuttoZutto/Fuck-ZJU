@@ -30,7 +30,7 @@ from src.live.insight.dingtalk import DingTalkNotifier
 from src.live.insight.models import KeywordConfig, RealtimeInsightConfig, format_local_ts
 from src.live.insight.openai_client import OpenAIInsightClient
 from src.live.insight.stage_processor import InsightStageProcessor
-from src.live.insight.stream_pipeline import StreamRealtimeInsightPipeline
+from src.live.insight.stream_pipeline import StreamRealtimeInsightPipeline, load_hotwords
 
 
 def _load_keywords(path: Path, *, log_fn: Callable[[str], None]) -> KeywordConfig:
@@ -945,6 +945,11 @@ def run_mic_listen(args: argparse.Namespace) -> int:
     session_dir.mkdir(parents=True, exist_ok=True)
 
     pipeline_mode = str(getattr(args, "rt_pipeline_mode", "chunk") or "chunk").strip().lower() or "chunk"
+    validation_error = _validate_mic_listen_realtime_args(args, pipeline_mode=pipeline_mode)
+    if validation_error:
+        print(f"[mic-listen] {validation_error}")
+        return 1
+
     chunk_seconds = max(2.0, float(args.rt_chunk_seconds))
     context_window_seconds = max(30.0, float(args.rt_context_window_seconds))
     context_target_chunks = max(1, int(context_window_seconds / max(0.1, chunk_seconds)))
@@ -958,9 +963,9 @@ def run_mic_listen(args: argparse.Namespace) -> int:
         chunk_seconds=chunk_seconds,
         context_window_seconds=int(context_window_seconds),
         model=(args.rt_model or "").strip() or "gpt-4.1-mini",
-        stt_model=(args.rt_stt_model or "").strip() or "whisper-large-v3",
+        stt_model=(args.rt_stt_model or "").strip(),
         asr_scene=str(getattr(args, "rt_asr_scene", "zh") or "zh").strip().lower() or "zh",
-        asr_model=(getattr(args, "rt_asr_model", "") or "").strip(),
+        asr_model=(getattr(args, "rt_asr_model", None) or "").strip(),
         hotwords_file=Path(getattr(args, "rt_hotwords_file", "config/realtime_hotwords.json"))
         .expanduser()
         .resolve(),
@@ -1255,6 +1260,24 @@ def _read_exact(handle, size: int) -> bytes | None:
             return None
         out.extend(block)
     return bytes(out)
+
+
+def _validate_mic_listen_realtime_args(args: argparse.Namespace, *, pipeline_mode: str) -> str:
+    if pipeline_mode == "stream":
+        asr_model = (getattr(args, "rt_asr_model", None) or "").strip()
+        if not asr_model:
+            return "stream mode requires explicit --rt-asr-model"
+        hotwords_file = Path(getattr(args, "rt_hotwords_file", "config/realtime_hotwords.json")).expanduser().resolve()
+        try:
+            _ = load_hotwords(hotwords_file, log_fn=lambda _msg: None)
+        except ValueError as exc:
+            return str(exc)
+        return ""
+
+    stt_model = (getattr(args, "rt_stt_model", None) or "").strip()
+    if not stt_model:
+        return "chunk mode requires explicit --rt-stt-model"
+    return ""
 
 
 def _parse_optional_epoch_ms(value: object) -> int | None:

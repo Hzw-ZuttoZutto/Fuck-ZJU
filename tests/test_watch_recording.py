@@ -136,6 +136,31 @@ class _FakeInsightService:
 
 
 class WatchRecordingTests(unittest.TestCase):
+    def test_watch_chunk_mode_requires_explicit_stt_model(self) -> None:
+        args = _watch_args()
+        args.rt_insight_enabled = True
+        args.rt_pipeline_mode = "chunk"
+        args.rt_stt_model = None
+        code = run_watch(args)
+        self.assertEqual(code, 1)
+
+    def test_watch_stream_mode_requires_explicit_asr_model(self) -> None:
+        args = _watch_args()
+        args.rt_insight_enabled = True
+        args.rt_pipeline_mode = "stream"
+        args.rt_asr_model = None
+        code = run_watch(args)
+        self.assertEqual(code, 1)
+
+    def test_watch_stream_mode_requires_valid_hotwords_file(self) -> None:
+        args = _watch_args()
+        args.rt_insight_enabled = True
+        args.rt_pipeline_mode = "stream"
+        args.rt_asr_model = "paraformer-realtime-v2"
+        args.rt_hotwords_file = "/tmp/not_found_hotwords.json"
+        code = run_watch(args)
+        self.assertEqual(code, 1)
+
     def test_watch_fails_when_course_meta_missing(self) -> None:
         args = _watch_args()
         with (

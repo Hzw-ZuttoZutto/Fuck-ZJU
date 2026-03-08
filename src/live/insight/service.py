@@ -129,6 +129,9 @@ class RealtimeInsightService:
         return self._prepare_chunk_runtime()
 
     def _prepare_chunk_runtime(self) -> bool:
+        if not str(self.config.stt_model or "").strip():
+            self._log("[rt-insight] chunk mode requires explicit stt_model; realtime insight disabled")
+            return False
         self._keywords = self._load_keywords(self.config.keywords_file)
         if not self._chunker.ensure_available():
             self._log("[rt-insight] ffmpeg not found; disabling realtime insight")
@@ -175,6 +178,9 @@ class RealtimeInsightService:
         return True
 
     def _prepare_stream_runtime(self) -> bool:
+        if not str(self.config.asr_model or "").strip():
+            self._log("[rt-stream] stream mode requires explicit asr_model; stream insight disabled")
+            return False
         if not self._stream_reader.ensure_available():
             self._log("[rt-stream] ffmpeg not found; disabling stream insight")
             return False
@@ -211,17 +217,17 @@ class RealtimeInsightService:
         if self._client is None:
             self._log("[rt-stream] OpenAI client unavailable")
             return False
-        self._stream_pipeline = StreamRealtimeInsightPipeline(
-            session_dir=self.session_dir,
-            config=self.config,
-            keywords=self._keywords,
-            llm_client=self._client,
-            dashscope_api_key=dashscope_key,
-            notifier=self._notifier,
-            log_fn=self._log,
-            stop_event=self._stop_event,
-        )
         try:
+            self._stream_pipeline = StreamRealtimeInsightPipeline(
+                session_dir=self.session_dir,
+                config=self.config,
+                keywords=self._keywords,
+                llm_client=self._client,
+                dashscope_api_key=dashscope_key,
+                notifier=self._notifier,
+                log_fn=self._log,
+                stop_event=self._stop_event,
+            )
             self._stream_pipeline.start()
         except Exception as exc:
             self._log(f"[rt-stream] failed to start stream pipeline: {exc}")

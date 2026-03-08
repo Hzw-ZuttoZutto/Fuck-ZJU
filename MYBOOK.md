@@ -25,14 +25,19 @@ cd /home/placitudo/fuckclass
   --host 127.0.0.1 \
   --port 18765 \
   --mic-upload-token YOUR_TOKEN \
+  --rt-pipeline-mode stream \
+  --rt-dingtalk-enabled \
+  --rt-dingtalk-cooldown-sec 30 \
+  --rt-asr-scene zh \
+  --rt-asr-model fun-asr-realtime \
+  --rt-hotwords-file config/realtime_hotwords.json \
+  --rt-window-sentences 8 \
+  --rt-stream-analysis-workers 32 \
+  --rt-stream-queue-size 100 \
+  --rt-asr-endpoint wss://dashscope.aliyuncs.com/api-ws/v1/inference \
   --rt-chunk-seconds 10 \
-  --rt-stt-model whisper-large-v3 \
   --rt-model gpt-4.1-mini \
   --rt-keywords-file config/realtime_keywords.json \
-  --rt-stt-request-timeout-sec 8 \
-  --rt-stt-stage-timeout-sec 32 \
-  --rt-stt-retry-count 4 \
-  --rt-stt-retry-interval-sec 0.2 \
   --rt-analysis-request-timeout-sec 15 \
   --rt-analysis-stage-timeout-sec 60 \
   --rt-analysis-retry-count 4 \
@@ -76,7 +81,8 @@ $ff='D:\All_The_App\Anaconda3\envs\fuckclass\Library\bin\ffmpeg.exe'
 chcp 65001 > $null
 $env:PYTHONIOENCODING='utf-8'
 
-& $py -m src.main mic-publish --target-url http://127.0.0.1:18765 --mic-upload-token YOUR_TOKEN --device "麦克风阵列 (适用于数字麦克风的英特尔® 智音技术)" --chunk-seconds 10 --ffmpeg-bin $ff --work-dir .mic_publish_chunks_run_01
+& $py -m src.main mic-publish --target-url http://127.0.0.1:18765 --mic-upload-token YOUR_TOKEN --device "麦克风阵列 (适用于数字麦克风的英特尔® 智音技术)" --rt-pipeline-mode stream --stream-frame-duration-ms 120 --request-timeout-sec 20 --retry-base-sec 1.0 --retry-max-sec 12.0 --ffmpeg-bin $ff
+
 ```
 
 ## 4. 链路验证（终端 D, PowerShell）

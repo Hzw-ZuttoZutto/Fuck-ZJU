@@ -149,7 +149,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     watch.add_argument(
         "--rt-stt-model",
-        default="whisper-large-v3",
+        default=None,
         help="OpenAI speech-to-text model for realtime insight",
     )
     watch.add_argument(
@@ -160,8 +160,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     watch.add_argument(
         "--rt-asr-model",
-        default="",
-        help="Optional streaming ASR model override",
+        default=None,
+        help="Streaming ASR model (required when --rt-pipeline-mode=stream and --rt-insight-enabled)",
     )
     watch.add_argument(
         "--rt-hotwords-file",
@@ -354,7 +354,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     mic_listen.add_argument(
         "--rt-stt-model",
-        default="whisper-large-v3",
+        default=None,
         help="OpenAI speech-to-text model for realtime insight",
     )
     mic_listen.add_argument(
@@ -365,8 +365,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     mic_listen.add_argument(
         "--rt-asr-model",
-        default="",
-        help="Optional streaming ASR model override",
+        default=None,
+        help="Streaming ASR model (required when --rt-pipeline-mode=stream)",
     )
     mic_listen.add_argument(
         "--rt-hotwords-file",

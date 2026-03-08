@@ -25,6 +25,7 @@ from src.live.insight import (
     RealtimeInsightConfig,
     RealtimeInsightService,
 )
+from src.live.insight.stream_pipeline import load_hotwords
 from src.live.joiner import JoinRoomClient
 from src.live.poller import StreamPoller
 from src.live.proxy import ProxyEngine
@@ -153,6 +154,12 @@ class WatchRequestHandler(BaseHTTPRequestHandler):
 
 
 def run_watch(args: argparse.Namespace) -> int:
+    if bool(getattr(args, "rt_insight_enabled", False)):
+        validation_error = _validate_watch_realtime_args(args)
+        if validation_error:
+            print(f"Watch failed: {validation_error}", file=sys.stderr)
+            return 1
+
     username, password, cred_error = resolve_credentials(args.username, args.password)
     if cred_error:
         print(f"Credential error: {cred_error}", file=sys.stderr)
@@ -299,7 +306,7 @@ def run_watch(args: argparse.Namespace) -> int:
                 chunk_seconds=chunk_seconds,
                 context_window_seconds=max(30, int(args.rt_context_window_seconds)),
                 model=(args.rt_model or "").strip() or "gpt-4.1-mini",
-                stt_model=(args.rt_stt_model or "").strip() or "whisper-large-v3",
+                stt_model=(args.rt_stt_model or "").strip(),
                 asr_scene=asr_scene,
                 asr_model=asr_model,
                 hotwords_file=Path(getattr(args, "rt_hotwords_file", "config/realtime_hotwords.json"))
@@ -351,7 +358,7 @@ def run_watch(args: argparse.Namespace) -> int:
             if pipeline_mode == "stream":
                 print(
                     "Realtime insight enabled(stream): "
-                    f"asr_scene={insight_config.asr_scene}, asr_model={insight_config.asr_model or '(auto)'}, "
+                    f"asr_scene={insight_config.asr_scene}, asr_model={insight_config.asr_model}, "
                     f"analysis_model={insight_config.model}, window_sentences={insight_config.window_sentences}, "
                     f"analysis_workers={insight_config.stream_analysis_workers}, "
                     f"queue_size={insight_config.stream_queue_size}, hotwords={insight_config.hotwords_file}"
@@ -433,6 +440,25 @@ def run_watch(args: argparse.Namespace) -> int:
         poller.stop()
 
     return 0
+
+
+def _validate_watch_realtime_args(args: argparse.Namespace) -> str:
+    pipeline_mode = str(getattr(args, "rt_pipeline_mode", "chunk") or "chunk").strip().lower() or "chunk"
+    if pipeline_mode == "stream":
+        asr_model = (getattr(args, "rt_asr_model", None) or "").strip()
+        if not asr_model:
+            return "stream mode requires explicit --rt-asr-model"
+        hotwords_file = Path(getattr(args, "rt_hotwords_file", "config/realtime_hotwords.json")).expanduser().resolve()
+        try:
+            _ = load_hotwords(hotwords_file, log_fn=lambda _msg: None)
+        except ValueError as exc:
+            return str(exc)
+        return ""
+
+    stt_model = (getattr(args, "rt_stt_model", None) or "").strip()
+    if not stt_model:
+        return "chunk mode requires explicit --rt-stt-model"
+    return ""
 
 
 def _parse_csv_values(raw: object) -> list[str]:

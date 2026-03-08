@@ -9,7 +9,7 @@ from pathlib import Path
 from src.live.insight.models import KeywordConfig, RealtimeInsightConfig
 from src.live.insight.openai_client import InsightModelResult
 from src.live.insight.stream_asr import RealtimeAsrEvent
-from src.live.insight.stream_pipeline import StreamRealtimeInsightPipeline
+from src.live.insight.stream_pipeline import StreamRealtimeInsightPipeline, load_hotwords
 
 
 def _read_jsonl(path: Path) -> list[dict]:
@@ -195,6 +195,31 @@ class StreamPipelineTests(unittest.TestCase):
             self.assertGreaterEqual(len(notifier.events), 1)
             reasons = [str(getattr(event, "reason", "")) for event in notifier.events]
             self.assertIn("stream_queue_drop_oldest", reasons)
+
+    def test_load_hotwords_raises_when_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "missing_hotwords.json"
+            with self.assertRaises(ValueError):
+                _ = load_hotwords(path, log_fn=lambda _msg: None)
+
+    def test_empty_asr_model_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            hotwords = base / "hotwords.json"
+            hotwords.write_text('["签到"]', encoding="utf-8")
+            config = self._build_config(hotwords)
+            config.asr_model = ""
+            with self.assertRaises(ValueError):
+                _ = StreamRealtimeInsightPipeline(
+                    session_dir=base,
+                    config=config,
+                    keywords=KeywordConfig(),
+                    llm_client=_FakeLlmClient(),
+                    dashscope_api_key="k",
+                    notifier=_FakeNotifier(),  # type: ignore[arg-type]
+                    asr_client=_FakeAsrClient(),  # type: ignore[arg-type]
+                    log_fn=lambda _msg: None,
+                )
 
 
 if __name__ == "__main__":

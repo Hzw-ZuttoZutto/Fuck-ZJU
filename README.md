@@ -33,6 +33,8 @@ OPENAI_API_KEY=你的OpenAIKey
 # 2) AIHubMix key（OpenAI 兼容网关）
 # AIHUBMIX_API_KEY=你的AIHubMixKey
 # OPENAI_BASE_URL=https://aihubmix.com/v1
+# stream ASR 必填
+# DASHSCOPE_API_KEY=你的DashScopeKey
 # 可选：钉钉机器人告警
 # DINGTALK_WEBHOOK=https://oapi.dingtalk.com/robot/send?access_token=...
 # DINGTALK_SECRET=SEC...
@@ -133,6 +135,9 @@ python -m src.main simulate \
 - AI key 读取优先级：
   - `.account` 中 `OPENAI_API_KEY` / `AIHUBMIX_API_KEY`
   - 环境变量 `OPENAI_API_KEY` / `AIHUBMIX_API_KEY`
+- stream ASR key 读取优先级：
+  - `.account` 中 `DASHSCOPE_API_KEY` / `dashscope_api_key`
+  - 环境变量 `DASHSCOPE_API_KEY`
 - Base URL 可通过 `.account` 或环境变量中的 `OPENAI_BASE_URL` / `AIHUBMIX_BASE_URL` 指定。
 - 若只配置 `AIHUBMIX_API_KEY` 且未显式给 Base URL，默认使用 `https://aihubmix.com/v1`。
 - 钉钉机器人告警可从 `.account` 或环境变量读取：
@@ -159,7 +164,11 @@ python -m src.main simulate \
 - 旧版扁平字段 `important_terms/important_phrases/negative_terms` 仍可兼容读取。
 - 实时流程为两阶段：`10s音频 -> STT转写 -> 文本上下文分析`。
 - 新增 stream 模式（`--rt-pipeline-mode stream`）：`音频流 + 热词 -> 句级ASR(partial/final) -> 句级滑窗分析`。
-- stream 模式默认模型映射：`zh -> paraformer-realtime-v2`，`multi -> gummy-realtime-v1`（可由 `--rt-asr-model` 覆盖）。
+- `watch` 仅在 `--rt-insight-enabled` 时做模型必填校验：chunk 必须显式传 `--rt-stt-model`，stream 必须显式传 `--rt-asr-model`。
+- `mic-listen` 启动即做模型必填校验：chunk 必须显式传 `--rt-stt-model`，stream 必须显式传 `--rt-asr-model`。
+- stream 热词文件默认 `config/realtime_hotwords.json`，但会强校验：文件不可读/非 JSON 数组将启动失败；空数组 `[]` 合法。
+- stream 路由规则：仅 `gummy-*` 走翻译实时客户端；`paraformer-*` 与 `fun-asr-*` 走识别实时客户端。
+- `scene=multi + paraformer-realtime-v2` 仅输出识别文本，`translation_text` 为空。
 - stream 模式新增句级日志：`realtime_asr_events.jsonl`（记录 partial/final、sentence_id、start/end_ms）。
 - stream 模式下 `realtime_transcripts.jsonl` 仅写入 final 句，保持兼容字段并追加句级定位字段。
 - 紧急度为二分类：重要=95%，非重要或失败降级=10%。
@@ -298,3 +307,14 @@ python -m src.main mic-publish \
 - `realtime_insights.jsonl`
 - `realtime_insights.log`
 - 若开启钉钉告警，只会转发 `important=true` 的事件，且 `30s` 冷却窗口内的新紧急事件会直接丢弃。
+
+流式 ASR 连通性/延迟实验（阶段1+2）：
+
+```bash
+python scripts/stream_asr_experiment.py --repeat 5
+```
+
+产物：
+
+- `reports/stream_asr_experiment_<ts>.md`
+- `reports/stream_asr_experiment_<ts>.json`
