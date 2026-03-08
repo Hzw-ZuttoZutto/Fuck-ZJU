@@ -1,5 +1,19 @@
 # Fuck-ZJU 使用门户
 
+## 项目定位与核心功能
+
+项目定位：
+
+- 面向“上课实用场景”的课堂直播辅助工具，聚焦“快速找到课程、稳定观看/录制、实时提取紧急事项并通知”。
+
+核心功能：
+
+- 课程扫描：按教师名与课程名在课程 ID 区间内快速定位目标课程。
+- 直播代理：提供教师流/PPT 流本地播放入口，并具备拉流重试与容错能力。
+- 课堂录制：按会话自动落盘音视频与缺失区间日志，支持分段录制。
+- 实时分析与告警：对课堂音频做实时转写和重要事项提炼，支持钉钉告警。
+- 独立麦克风链路：支持 `mic-listen + mic-publish` 在无 watch 场景下单独运行实时分析。
+
 统一入口：
 
 ```bash
@@ -412,3 +426,106 @@ python -m src.main mic-publish \
 - `realtime_asr_events.jsonl`（stream 模式）
 - `realtime_dingtalk_trace.jsonl`（启用钉钉时）
 - `realtime_profile.jsonl`（启用 `--rt-profile-enabled` 时）
+
+## 7. 自定义关键词与热词
+
+这一节用于按你的业务需求，修改：
+
+- `config/realtime_keywords.json`：自定义实时分析规则（等价于“规则化 prompt 配置”）与紧急关键词。
+- `config/realtime_hotwords.json`：自定义 stream ASR 的转写/翻译热词。
+
+### 7.1 两个配置分别影响什么
+
+| 文件 | 生效范围 | 作用 |
+|---|---|---|
+| `config/realtime_keywords.json` | `watch --rt-insight-enabled`、`mic-listen`（chunk/stream 都会用） | 注入分析规则，影响 `important` 判定、`event_type` 与告警内容 |
+| `config/realtime_hotwords.json` | `--rt-pipeline-mode stream` | 传给 DashScope 实时 ASR，提升指定词的识别/翻译命中率 |
+
+注意：
+
+- 修改任一配置后，都需要重启 `watch` 或 `mic-listen` 才会生效。
+- `realtime_keywords.json` 配的是“规则内容”（会进入分析提示词）；系统模板文案在代码中固定。
+- 若要直接改系统模板文案，请修改 `src/live/insight/prompting.py` 中的 `build_system_prompt`。
+
+### 7.2 自定义 `realtime_keywords.json`（紧急关键词 + 规则 prompt）
+
+推荐使用当前默认的 `version: 2` 分组格式：
+
+| 字段 | 含义 | 修改建议 |
+|---|---|---|
+| `global_negative_terms` | 全局负向词（命中时倾向降权） | 放“闲聊/测试/无关口头语”等非紧急内容 |
+| `groups[].id` | 事件类型唯一标识 | 使用英文短 id，如 `exam_notice` |
+| `groups[].label` | 事件类型显示名 | 用中文业务名，如“考试通知” |
+| `groups[].aliases` | 同义触发词 | 放常见关键词、同义词、缩写 |
+| `groups[].phrases` | 典型完整短语 | 放老师常说的完整表达 |
+| `groups[].detail_cues` | 延续细节线索 | 放题号/截止时间/链接/口令等执行细节词 |
+
+新增一个事件分组（示例）：
+
+```json
+{
+  "id": "exam_notice",
+  "label": "考试通知",
+  "aliases": ["考试", "考试安排", "期中考试", "期末考试"],
+  "phrases": ["下周进行期中考试", "考试时间有调整"],
+  "detail_cues": ["考试时间", "考试地点", "考试范围", "开卷", "闭卷"]
+}
+```
+
+删除一个事件分组：
+
+1. 在 `groups` 中删除对应 `id` 的对象。
+2. 如该类词也出现在 `realtime_hotwords.json`，按需同步删除。
+
+修改一个事件分组：
+
+1. 保持 `id` 不变（避免事件类型漂移）。
+2. 按业务迭代更新 `aliases`/`phrases`/`detail_cues`。
+3. 高频误报词加入 `global_negative_terms`。
+
+兼容说明：
+
+- 旧版字段 `important_terms` / `important_phrases` / `negative_terms` 仍兼容。
+- 但新配置建议统一用 `version: 2 + groups`，更容易按业务扩展。
+
+### 7.3 自定义 `realtime_hotwords.json`（stream 转写/翻译热词）
+
+文件格式必须是 JSON 字符串数组，例如：
+
+```json
+[
+  "签到",
+  "签到码",
+  "作业提交",
+  "截止时间",
+  "期中考试"
+]
+```
+
+增删改规则：
+
+1. 新增热词：直接追加一个字符串元素。
+2. 删除热词：删除对应字符串元素。
+3. 修改热词：直接改字符串内容，尽量贴近教师真实说法。
+
+注意：
+
+- 根节点必须是数组；不是数组会导致 stream 模式启动失败。
+- 文件不可读或 JSON 非法，也会导致 stream 模式启动失败。
+- 空数组 `[]` 合法，但会失去热词增强效果。
+
+### 7.4 校验与生效步骤
+
+1. 校验 JSON 语法：
+
+```bash
+python -m json.tool config/realtime_keywords.json > /dev/null
+python -m json.tool config/realtime_hotwords.json > /dev/null
+```
+
+2. 重启 `watch` 或 `mic-listen`。
+
+3. 观察日志确认加载成功：
+
+- `keywords` 文件异常时，会打印 `using empty rules`（流程不崩，但规则失效）。
+- stream 成功加载热词时，会打印 `loaded hotwords file ... items=<N>`。
