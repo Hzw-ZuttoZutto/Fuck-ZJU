@@ -468,7 +468,7 @@ class RealtimeInsightService:
                 handle.write("\n")
 
             with self._text_log_path.open("a", encoding="utf-8") as handle:
-                handle.write(f"紧急程度：{event.urgency_percent}%\n")
+                handle.write(f"{event.text_log_level}\n")
                 handle.write(f"具体内容：{event.summary}\n")
                 handle.write(f"具体上下文：{event.context_summary}\n")
                 handle.write("\n")

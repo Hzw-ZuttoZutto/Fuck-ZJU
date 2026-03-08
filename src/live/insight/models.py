@@ -142,6 +142,10 @@ class InsightEvent:
     def urgency_percent(self) -> int:
         return 95 if self.important else 10
 
+    @property
+    def text_log_level(self) -> str:
+        return "紧急!" if self.important else "平常"
+
     def to_json_dict(self) -> dict:
         return {
             "ts_local": format_local_ts(self.ts),

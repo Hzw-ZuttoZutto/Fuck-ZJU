@@ -45,9 +45,16 @@ class _FakeChunker:
 
 
 class _FakeClient:
-    def __init__(self, *, timeout_on_stt: bool = False, timeout_on_analysis: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        timeout_on_stt: bool = False,
+        timeout_on_analysis: bool = False,
+        important: bool = True,
+    ) -> None:
         self.timeout_on_stt = timeout_on_stt
         self.timeout_on_analysis = timeout_on_analysis
+        self.important = important
         self.analysis_contexts: list[str] = []
 
     def transcribe_chunk(self, *, chunk_path: Path, stt_model: str, timeout_sec: float) -> str:
@@ -68,7 +75,7 @@ class _FakeClient:
             raise TimeoutError("analysis timeout")
         self.analysis_contexts.append(context_text)
         return InsightModelResult(
-            important=True,
+            important=self.important,
             summary="提到了微积分重点",
             context_summary="老师在讲导数与极限关系",
             matched_terms=["微积分", "导数"],
@@ -129,7 +136,26 @@ class RealtimeInsightServiceTests(unittest.TestCase):
             self.assertEqual(transcript_payload["status"], "ok")
             self.assertEqual(insight_payload["status"], "ok")
             self.assertEqual(insight_payload["chunk_seq"], 1)
-            self.assertIn("紧急程度：95%", text_log)
+            self.assertEqual(
+                text_log,
+                "紧急!\n具体内容：提到了微积分重点\n具体上下文：老师在讲导数与极限关系\n\n",
+            )
+
+    def test_process_chunk_non_urgent_text_log_uses_plain_label(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            session_dir = Path(td)
+            chunk = session_dir / "chunk_20260101_000000.mp3"
+            chunk.write_bytes(b"audio")
+
+            service = self._build_service(session_dir, _FakeClient(important=False))
+            self.assertTrue(service._prepare_runtime())
+            service._process_chunk_task(1, chunk)
+
+            text_log = (session_dir / "realtime_insights.log").read_text(encoding="utf-8")
+            self.assertEqual(
+                text_log,
+                "平常\n具体内容：提到了微积分重点\n具体上下文：老师在讲导数与极限关系\n\n",
+            )
 
     def test_transcript_timeout_drop(self) -> None:
         with tempfile.TemporaryDirectory() as td:
