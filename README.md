@@ -141,14 +141,13 @@ python -m src.main analysis \
 1. 服务端启动：
 
 ```bash
-TOKEN="micstream001"
 SESSION_DIR="mic_session_$(date +%Y%m%d_%H%M%S)"
 
 python -m src.main mic-listen \
   --host 127.0.0.1 \
   --port 18765 \
   --session-dir "$SESSION_DIR" \
-  --mic-upload-token "$TOKEN" \
+  --mic-upload-token "micstream001" \
   --rt-pipeline-mode stream \
   --rt-dingtalk-enabled \
   --rt-dingtalk-cooldown-sec 0 \
@@ -182,15 +181,19 @@ ssh -N -L 18765:127.0.0.1:18765 <your-server>
 ```bash
 python -m src.main mic-list-devices
 
-python -m src.main mic-publish \
+python -m src.main mic-publish 
   --target-url http://127.0.0.1:18765 \
-  --mic-upload-token "$TOKEN" \
+  --mic-upload-token "micstream001" \
   --device "你的麦克风设备名" \
   --rt-pipeline-mode stream \
   --stream-frame-duration-ms 120 \
   --request-timeout-sec 20 \
   --retry-base-sec 1.0 \
   --retry-max-sec 12.0
+
+
+# 举例
+python -m src.main mic-publish --target-url http://127.0.0.1:18765 --mic-upload-token "micstream001" --device "麦克风阵列 (适用于数字麦克风的英特尔® 智音技术)" --rt-pipeline-mode stream --stream-frame-duration-ms 120 --request-timeout-sec 20 --retry-base-sec 1.0 --retry-max-sec 12.0
 ```
 
 ## 5. 参数说明（按功能块）
