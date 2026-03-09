@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -49,6 +50,8 @@ class InsightStageProcessor:
         self._state_lock = threading.Lock()
         self._max_written_chunk_seq = 0
         self._last_context_reason = ""
+        self._history_window_limit = self._compute_history_window_limit()
+        self._history_window: deque[TranscriptChunk] = deque()
 
         self._insight_jsonl_path = self.session_dir / "realtime_insights.jsonl"
         self._text_log_path = self.session_dir / "realtime_insights.log"
@@ -657,25 +660,11 @@ class InsightStageProcessor:
             with self._transcript_jsonl_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(payload, ensure_ascii=False))
                 handle.write("\n")
+        self._append_history_window(transcript)
 
     def load_transcript_chunks(self) -> list[TranscriptChunk]:
-        if not self._transcript_jsonl_path.exists():
-            return []
-        out: list[TranscriptChunk] = []
-        with self._io_lock:
-            lines = self._transcript_jsonl_path.read_text(encoding="utf-8").splitlines()
-        for raw in lines:
-            line = raw.strip()
-            if not line:
-                continue
-            try:
-                payload = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(payload, dict):
-                continue
-            out.append(TranscriptChunk.from_json_dict(payload))
-        return out
+        with self._state_lock:
+            return sorted(list(self._history_window), key=lambda item: item.chunk_seq)
 
     def write_drop_insight(
         self,
@@ -867,6 +856,25 @@ class InsightStageProcessor:
 
     def _is_stopping(self) -> bool:
         return bool(self._stop_event is not None and self._stop_event.is_set())
+
+    def _compute_history_window_limit(self) -> int:
+        target_chunks = max(1, int(getattr(self.config, "context_target_chunks", 18)))
+        recent_required = max(0, int(getattr(self.config, "context_recent_required", 4)))
+        min_ready = max(0, int(getattr(self.config, "context_min_ready", 15)))
+        return max(256, 8 * max(target_chunks, recent_required, min_ready, 1))
+
+    def _append_history_window(self, transcript: TranscriptChunk) -> None:
+        with self._state_lock:
+            replaced = False
+            for index, existing in enumerate(self._history_window):
+                if existing.chunk_seq == transcript.chunk_seq:
+                    self._history_window[index] = transcript
+                    replaced = True
+                    break
+            if not replaced:
+                self._history_window.append(transcript)
+            while len(self._history_window) > self._history_window_limit:
+                self._history_window.popleft()
 
     def _notify_dingtalk(self, event: InsightEvent) -> None:
         if self.notifier is None or not bool(getattr(self.config, "dingtalk_enabled", False)):

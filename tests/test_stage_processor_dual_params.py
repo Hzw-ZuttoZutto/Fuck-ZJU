@@ -4,8 +4,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from src.live.insight.models import KeywordConfig, RealtimeInsightConfig
+from src.live.insight.models import KeywordConfig, RealtimeInsightConfig, TranscriptChunk
 from src.live.insight.openai_client import InsightModelResult
 from src.live.insight.stage_processor import InsightStageProcessor
 
@@ -105,6 +106,19 @@ class _AlwaysOkClient:
 
 
 class StageProcessorDualParamTests(unittest.TestCase):
+    @staticmethod
+    def _chunk(seq: int, *, status: str = "ok", text: str = "t") -> TranscriptChunk:
+        return TranscriptChunk(
+            chunk_seq=int(seq),
+            chunk_file=f"asr_sentence_{int(seq):06d}.txt",
+            ts_local="20260309_180000",
+            text=f"{text}-{seq}",
+            status=status,
+            error="",
+            attempt_count=1,
+            elapsed_sec=0.0,
+        )
+
     def test_stage_specific_retry_and_timeout_are_applied(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
@@ -200,6 +214,79 @@ class StageProcessorDualParamTests(unittest.TestCase):
             self.assertEqual(insight_payload["status"], "ok")
             self.assertEqual(insight_payload["context_reason"], "full18_ready")
             self.assertEqual(insight_payload["context_chunk_count"], 0)
+
+    def test_history_read_uses_memory_window_without_disk_read(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cfg = RealtimeInsightConfig(
+                enabled=True,
+                context_recent_required=1,
+                context_target_chunks=2,
+                context_min_ready=1,
+            )
+            processor = InsightStageProcessor(
+                session_dir=base,
+                config=cfg,
+                keywords=KeywordConfig(),
+                client=_AlwaysOkClient(),  # type: ignore[arg-type]
+                log_fn=lambda _: None,
+            )
+            processor.append_transcript(self._chunk(1))
+            processor.append_transcript(self._chunk(2))
+
+            # Build history from memory window; any disk read would fail this test.
+            with mock.patch.object(Path, "read_text", side_effect=AssertionError("disk read is not expected")):
+                history = processor.load_history_chunks(3)
+
+            self.assertEqual([item.chunk_seq for item in history], [1, 2])
+
+    def test_history_window_incremental_visibility(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cfg = RealtimeInsightConfig(
+                enabled=True,
+                context_recent_required=0,
+                context_target_chunks=5,
+                context_min_ready=0,
+            )
+            processor = InsightStageProcessor(
+                session_dir=base,
+                config=cfg,
+                keywords=KeywordConfig(),
+                client=_AlwaysOkClient(),  # type: ignore[arg-type]
+                log_fn=lambda _: None,
+            )
+            processor.append_transcript(self._chunk(1))
+            processor.append_transcript(self._chunk(2))
+            processor.append_transcript(self._chunk(3, status="transcript_drop_error"))
+
+            history = processor.load_history_chunks(4)
+            self.assertEqual([item.chunk_seq for item in history], [1, 2])
+
+    def test_history_window_eviction_keeps_recent_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cfg = RealtimeInsightConfig(
+                enabled=True,
+                context_recent_required=1,
+                context_target_chunks=2,
+                context_min_ready=1,
+            )
+            processor = InsightStageProcessor(
+                session_dir=base,
+                config=cfg,
+                keywords=KeywordConfig(),
+                client=_AlwaysOkClient(),  # type: ignore[arg-type]
+                log_fn=lambda _: None,
+            )
+
+            for seq in range(1, 301):
+                processor.append_transcript(self._chunk(seq))
+
+            all_chunks = processor.load_transcript_chunks()
+            self.assertEqual(len(all_chunks), 256)
+            self.assertEqual(all_chunks[0].chunk_seq, 45)
+            self.assertEqual(all_chunks[-1].chunk_seq, 300)
 
 
 if __name__ == "__main__":
