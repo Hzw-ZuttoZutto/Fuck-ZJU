@@ -156,11 +156,13 @@ class DashScopeRealtimeAsrClient:
             def on_open(self) -> None:
                 return
 
-            def on_close(self) -> None:
-                return
+            def on_close(self, *args: Any, **kwargs: Any) -> None:
+                del args, kwargs
+                outer._on_error("dashscope recognition connection closed")
 
-            def on_complete(self) -> None:
-                return
+            def on_complete(self, *args: Any, **kwargs: Any) -> None:
+                del args, kwargs
+                outer._on_error("dashscope recognition completed")
 
             def on_error(self, result: Any) -> None:
                 msg = str(getattr(result, "message", "") or getattr(result, "error", "") or result)
@@ -191,8 +193,13 @@ class DashScopeRealtimeAsrClient:
             def on_open(self) -> None:
                 return
 
-            def on_close(self) -> None:
-                return
+            def on_close(self, *args: Any, **kwargs: Any) -> None:
+                del args, kwargs
+                outer._on_error("dashscope translation connection closed")
+
+            def on_complete(self, *args: Any, **kwargs: Any) -> None:
+                del args, kwargs
+                outer._on_error("dashscope translation completed")
 
             def on_error(self, error: Any) -> None:
                 msg = str(getattr(error, "message", "") or getattr(error, "error", "") or error)

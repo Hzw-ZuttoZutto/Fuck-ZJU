@@ -33,6 +33,11 @@ class RealtimeAudioFrameReader:
         with self._lock:
             return self._active_source
 
+    def is_running(self) -> bool:
+        with self._lock:
+            proc = self._proc
+            return bool(proc is not None and proc.poll() is None)
+
     def start_stream_source(self, source_url: str, *, on_frame: Callable[[bytes], None]) -> None:
         source = str(source_url or "").strip()
         if not source:

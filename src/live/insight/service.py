@@ -45,6 +45,7 @@ class RealtimeInsightService:
         self._log_lock = threading.Lock()
         self._io_lock = threading.Lock()
         self._state_lock = threading.Lock()
+        self._lifecycle_lock = threading.Lock()
 
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -100,19 +101,25 @@ class RealtimeInsightService:
     def start(self) -> None:
         if not self.config.enabled:
             return
-        if self._thread is not None:
-            return
         self.session_dir.mkdir(parents=True, exist_ok=True)
-        self._stop_event.clear()
-        self._thread = threading.Thread(target=self._run, name="realtime-insight")
-        self._thread.start()
+        with self._lifecycle_lock:
+            thread = self._thread
+            if thread is not None and thread.is_alive():
+                return
+            self._stop_event.clear()
+            thread = threading.Thread(target=self._run, name="realtime-insight")
+            self._thread = thread
+        thread.start()
 
     def stop(self) -> None:
         self._stop_event.set()
-        thread = self._thread
+        with self._lifecycle_lock:
+            thread = self._thread
         if thread is not None:
             thread.join()
-        self._thread = None
+        with self._lifecycle_lock:
+            if self._thread is thread:
+                self._thread = None
         if self._stream_pipeline is not None:
             self._stream_pipeline.stop()
             self._stream_pipeline = None
@@ -121,30 +128,43 @@ class RealtimeInsightService:
         elif self._notifier is not None:
             self._notifier.stop()
 
-    def _run(self) -> None:
-        if not self._prepare_runtime():
-            return
-        if self._pipeline_mode == "stream":
-            self._run_stream_mode()
-            return
+    def is_running(self) -> bool:
+        with self._lifecycle_lock:
+            thread = self._thread
+            return bool(thread is not None and thread.is_alive())
 
-        self._executor = ThreadPoolExecutor(
-            max_workers=max(1, int(self.config.max_concurrency)),
-            thread_name_prefix="rt-insight-worker",
-        )
+    def _run(self) -> None:
         try:
-            while not self._stop_event.is_set():
-                self._sync_stream_source()
-                self._dispatch_ready_chunks()
-                self._reap_completed_tasks()
-                self._stop_event.wait(max(0.2, float(self.config.poll_interval_sec)))
+            if not self._prepare_runtime():
+                return
+            if self._pipeline_mode == "stream":
+                self._run_stream_mode()
+                return
+
+            self._executor = ThreadPoolExecutor(
+                max_workers=max(1, int(self.config.max_concurrency)),
+                thread_name_prefix="rt-insight-worker",
+            )
+            try:
+                while not self._stop_event.is_set():
+                    self._sync_stream_source()
+                    self._dispatch_ready_chunks()
+                    self._reap_completed_tasks()
+                    self._stop_event.wait(max(0.2, float(self.config.poll_interval_sec)))
+            finally:
+                self._chunker.stop()
+                self._dispatch_ready_chunks(force=True)
+                self._wait_for_running_tasks()
+                if self._executor is not None:
+                    self._executor.shutdown(wait=True, cancel_futures=False)
+                self._executor = None
+        except Exception as exc:  # pragma: no cover - defensive
+            self._log(f"[rt-insight] service loop crashed: {exc}")
         finally:
-            self._chunker.stop()
-            self._dispatch_ready_chunks(force=True)
-            self._wait_for_running_tasks()
-            if self._executor is not None:
-                self._executor.shutdown(wait=True, cancel_futures=False)
-            self._executor = None
+            with self._lifecycle_lock:
+                current = threading.current_thread()
+                if self._thread is current:
+                    self._thread = None
 
     def _prepare_runtime(self) -> bool:
         if self._pipeline_mode == "stream":
@@ -267,19 +287,7 @@ class RealtimeInsightService:
     def _run_stream_mode(self) -> None:
         try:
             while not self._stop_event.is_set():
-                teacher_url = self._teacher_stream_url()
-                if not teacher_url:
-                    if self._active_url:
-                        self._log("[rt-stream] teacher stream unavailable; pausing frame reader")
-                    self._active_url = ""
-                    self._stream_reader.stop()
-                elif teacher_url != self._active_url:
-                    self._active_url = teacher_url
-                    try:
-                        self._stream_reader.start_stream_source(teacher_url, on_frame=self._on_stream_audio_frame)
-                        self._log("[rt-stream] audio reader attached to teacher stream")
-                    except Exception as exc:
-                        self._log(f"[rt-stream] failed to start audio reader: {exc}")
+                self._sync_stream_reader_source()
                 self._stop_event.wait(max(0.2, float(self.config.poll_interval_sec)))
         finally:
             self._stream_reader.stop()
@@ -301,14 +309,41 @@ class RealtimeInsightService:
             self._active_url = ""
             self._chunker.stop()
             return
-        if teacher_url == self._active_url:
+        url_changed = teacher_url != self._active_url
+        if not url_changed and self._chunker.is_running():
             return
         self._active_url = teacher_url
         try:
             self._chunker.start(teacher_url)
-            self._log("[rt-insight] audio chunker attached to teacher stream")
+            if url_changed:
+                self._log("[rt-insight] audio chunker switched to new teacher stream")
+            else:
+                self._log("[rt-insight] audio chunker recovered on unchanged teacher stream")
         except Exception as exc:
             self._log(f"[rt-insight] failed to start audio chunker: {exc}")
+
+    def _sync_stream_reader_source(self) -> None:
+        teacher_url = self._teacher_stream_url()
+        if not teacher_url:
+            if self._active_url:
+                self._log("[rt-stream] teacher stream unavailable; pausing frame reader")
+            self._active_url = ""
+            self._stream_reader.stop()
+            return
+
+        url_changed = teacher_url != self._active_url
+        if not url_changed and self._stream_reader.is_running():
+            return
+
+        self._active_url = teacher_url
+        try:
+            self._stream_reader.start_stream_source(teacher_url, on_frame=self._on_stream_audio_frame)
+            if url_changed:
+                self._log("[rt-stream] audio reader switched to new teacher stream")
+            else:
+                self._log("[rt-stream] audio reader recovered on unchanged teacher stream")
+        except Exception as exc:
+            self._log(f"[rt-stream] failed to start audio reader: {exc}")
 
     def _teacher_stream_url(self) -> str:
         snap = self.poller.get_snapshot()

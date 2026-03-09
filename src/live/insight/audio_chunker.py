@@ -21,6 +21,10 @@ class RealtimeAudioChunker:
     def active_url(self) -> str:
         return self._active_url
 
+    def is_running(self) -> bool:
+        proc = self._proc
+        return bool(proc is not None and proc.poll() is None)
+
     def start(self, stream_url: str) -> None:
         if not stream_url:
             return

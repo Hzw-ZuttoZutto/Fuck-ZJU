@@ -128,7 +128,10 @@ class StreamRealtimeInsightPipeline:
         try:
             if data:
                 self.mark_server_frame_received()
-            return self._asr_client.send_audio_frame(data)
+            ok = bool(self._asr_client.send_audio_frame(data))
+            if not ok:
+                self._on_asr_error("send frame returned False")
+            return ok
         except Exception as exc:
             self._on_asr_error(f"send frame failed: {exc}")
             return False
@@ -237,16 +240,18 @@ class StreamRealtimeInsightPipeline:
     def _on_asr_error(self, message: str) -> None:
         if self._stop_event.is_set():
             return
-        self._log(f"[rt-stream-asr] error: {message}; reconnecting")
-        self._schedule_reconnect()
+        scheduled = self._schedule_reconnect()
+        if scheduled:
+            self._log(f"[rt-stream-asr] error: {message}; reconnecting")
 
-    def _schedule_reconnect(self) -> None:
+    def _schedule_reconnect(self) -> bool:
         with self._reconnect_lock:
             if self._reconnecting:
-                return
+                return False
             self._reconnecting = True
         thread = threading.Thread(target=self._reconnect_loop, name="rt-stream-asr-reconnect", daemon=True)
         thread.start()
+        return True
 
     def _reconnect_loop(self) -> None:
         try:

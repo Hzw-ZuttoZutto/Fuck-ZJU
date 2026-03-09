@@ -54,15 +54,24 @@ class _FakePoller:
     instance = None
 
     def __init__(self, **kwargs) -> None:
+        del kwargs
         self.started = False
         self.stopped = False
+        self.start_calls = 0
+        self.stop_calls = 0
         _FakePoller.instance = self
 
     def start(self) -> None:
+        self.start_calls += 1
         self.started = True
+        self.stopped = False
 
     def stop(self) -> None:
+        self.stop_calls += 1
         self.stopped = True
+
+    def is_running(self) -> bool:
+        return bool(self.started and not self.stopped)
 
 
 class _FakeInsightService:
@@ -71,14 +80,22 @@ class _FakeInsightService:
     def __init__(self, **kwargs) -> None:
         self.started = False
         self.stopped = False
+        self.start_calls = 0
+        self.stop_calls = 0
         self.notifier = kwargs.get("notifier")
         _FakeInsightService.instances.append(self)
 
     def start(self) -> None:
+        self.start_calls += 1
         self.started = True
+        self.stopped = False
 
     def stop(self) -> None:
+        self.stop_calls += 1
         self.stopped = True
+
+    def is_running(self) -> bool:
+        return bool(self.started and not self.stopped)
 
 
 class AnalysisModeTests(unittest.TestCase):
@@ -148,6 +165,43 @@ class AnalysisModeTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertIsNotNone(_FakeInsightService.instances[0].notifier)
+
+    def test_analysis_watchdog_restarts_dead_components(self) -> None:
+        args = _analysis_args()
+        _FakePoller.instance = None
+        _FakeInsightService.instances.clear()
+        sleep_calls = {"count": 0}
+
+        def _fake_sleep(_seconds: float) -> None:
+            sleep_calls["count"] += 1
+            if sleep_calls["count"] == 1:
+                if _FakePoller.instance is not None:
+                    _FakePoller.instance.stopped = True
+                if _FakeInsightService.instances:
+                    _FakeInsightService.instances[0].stopped = True
+                return
+            raise KeyboardInterrupt()
+
+        with (
+            mock.patch("src.live.analysis.ZJUAuthClient.login_and_get_token", return_value="tok"),
+            mock.patch(
+                "src.live.analysis.fetch_course_meta",
+                return_value=CourseMeta(course_id=1, title="课程", teachers=["老师"]),
+            ),
+            mock.patch("src.live.analysis.JoinRoomClient.try_join", return_value=_JoinResult()),
+            mock.patch("src.live.analysis.StreamPoller", _FakePoller),
+            mock.patch("src.live.analysis.RealtimeInsightService", _FakeInsightService),
+            mock.patch("src.live.analysis.time.sleep", side_effect=_fake_sleep),
+        ):
+            code = run_analysis(args)
+
+        self.assertEqual(code, 0)
+        self.assertIsNotNone(_FakePoller.instance)
+        self.assertGreaterEqual(_FakePoller.instance.start_calls, 2)
+        self.assertTrue(_FakePoller.instance.stopped)
+        self.assertTrue(_FakeInsightService.instances)
+        self.assertGreaterEqual(_FakeInsightService.instances[0].start_calls, 2)
+        self.assertTrue(_FakeInsightService.instances[0].stopped)
 
 
 if __name__ == "__main__":

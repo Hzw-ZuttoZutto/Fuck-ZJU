@@ -212,10 +212,53 @@ def run_analysis(args: argparse.Namespace) -> int:
     print("Press Ctrl+C to stop.")
 
     poller.start()
+    watchdog_base_sec = 1.0
+    watchdog_max_sec = 30.0
+    watchdog_backoff_sec = watchdog_base_sec
+    watchdog_next_retry_at = 0.0
     try:
         insight_service.start()
         while True:
             time.sleep(0.5)
+            poller_running = bool(poller.is_running())
+            insight_running = bool(insight_service.is_running())
+            if poller_running and insight_running:
+                watchdog_backoff_sec = watchdog_base_sec
+                watchdog_next_retry_at = 0.0
+                continue
+
+            now = time.monotonic()
+            if now < watchdog_next_retry_at:
+                continue
+
+            restart_ok = True
+            if not poller_running:
+                print("[analysis][watchdog] poller thread stopped; restarting")
+                try:
+                    poller.start()
+                except Exception as exc:
+                    restart_ok = False
+                    print(f"[analysis][watchdog] poller restart failed: {exc}", file=sys.stderr)
+
+            if not insight_running:
+                print("[analysis][watchdog] insight thread stopped; restarting")
+                try:
+                    insight_service.start()
+                except Exception as exc:
+                    restart_ok = False
+                    print(f"[analysis][watchdog] insight restart failed: {exc}", file=sys.stderr)
+
+            if restart_ok and poller.is_running() and insight_service.is_running():
+                watchdog_backoff_sec = watchdog_base_sec
+                watchdog_next_retry_at = 0.0
+                continue
+
+            print(
+                f"[analysis][watchdog] recovery pending; retry in {watchdog_backoff_sec:.1f}s",
+                file=sys.stderr,
+            )
+            watchdog_next_retry_at = now + watchdog_backoff_sec
+            watchdog_backoff_sec = min(watchdog_max_sec, watchdog_backoff_sec * 2.0)
     except KeyboardInterrupt:
         pass
     finally:

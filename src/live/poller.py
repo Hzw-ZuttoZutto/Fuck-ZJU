@@ -35,8 +35,9 @@ class StreamPoller:
         self.poll_interval = max(3.0, poll_interval)
 
         self._lock = threading.Lock()
+        self._lifecycle_lock = threading.Lock()
         self._stop_event = threading.Event()
-        self._thread = threading.Thread(target=self._run, name="stream-poller", daemon=True)
+        self._thread: threading.Thread | None = None
 
         self._poll_total = 0
         self._poll_failures = 0
@@ -72,11 +73,29 @@ class StreamPoller:
         )
 
     def start(self) -> None:
-        self._thread.start()
+        with self._lifecycle_lock:
+            thread = self._thread
+            if thread is not None and thread.is_alive():
+                return
+            self._stop_event.clear()
+            thread = threading.Thread(target=self._run, name="stream-poller", daemon=True)
+            self._thread = thread
+        thread.start()
 
     def stop(self) -> None:
         self._stop_event.set()
-        self._thread.join(timeout=3)
+        with self._lifecycle_lock:
+            thread = self._thread
+        if thread is not None:
+            thread.join(timeout=3)
+        with self._lifecycle_lock:
+            if self._thread is thread:
+                self._thread = None
+
+    def is_running(self) -> bool:
+        with self._lifecycle_lock:
+            thread = self._thread
+            return bool(thread is not None and thread.is_alive())
 
     def get_snapshot(self) -> WatchSnapshot:
         with self._lock:
@@ -104,10 +123,30 @@ class StreamPoller:
                 self._consecutive_poll_failures = 0
 
     def _run(self) -> None:
-        while not self._stop_event.is_set():
-            snapshot = self._fetch_once()
-            self._set_snapshot(snapshot)
-            self._stop_event.wait(self.poll_interval)
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    snapshot = self._fetch_once()
+                except Exception as exc:  # pragma: no cover - defensive
+                    snapshot = WatchSnapshot(
+                        updated_at_utc=now_utc_iso(),
+                        success=False,
+                        result_err=None,
+                        result_err_msg="poller_loop_exception",
+                        stream_count=0,
+                        streams={},
+                        raw_streams=[],
+                        active_provider="",
+                        provider_diagnostics={},
+                        error=f"poller loop exception: {exc}",
+                    )
+                self._set_snapshot(snapshot)
+                self._stop_event.wait(self.poll_interval)
+        finally:
+            with self._lifecycle_lock:
+                current = threading.current_thread()
+                if self._thread is current:
+                    self._thread = None
     # 定时轮询上游接口
     def _fetch_once(self) -> WatchSnapshot:
         meta = self._meta_provider.fetch()

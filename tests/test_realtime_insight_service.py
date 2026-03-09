@@ -33,15 +33,48 @@ class _FakeChunker:
     def __init__(self) -> None:
         self.started_url = ""
         self.stopped = False
+        self.running = False
+        self.start_calls = 0
 
     def ensure_available(self) -> bool:
         return True
 
     def start(self, stream_url: str) -> None:
+        self.start_calls += 1
         self.started_url = stream_url
+        self.running = True
 
     def stop(self, grace_sec: float = 2.0) -> None:
         self.stopped = True
+        self.running = False
+
+    def is_running(self) -> bool:
+        return bool(self.running)
+
+
+class _FakeFrameReader:
+    def __init__(self) -> None:
+        self.active_source = ""
+        self.running = False
+        self.start_calls = 0
+        self.stop_calls = 0
+
+    def ensure_available(self) -> bool:
+        return True
+
+    def start_stream_source(self, source_url: str, *, on_frame) -> None:
+        del on_frame
+        self.start_calls += 1
+        self.active_source = source_url
+        self.running = True
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+        self.active_source = ""
+        self.running = False
+
+    def is_running(self) -> bool:
+        return bool(self.running)
 
 
 class _FakeClient:
@@ -319,6 +352,50 @@ class RealtimeInsightServiceTests(unittest.TestCase):
 
             transcript_lines = (session_dir / "realtime_transcripts.jsonl").read_text(encoding="utf-8").splitlines()
             self.assertEqual(len(transcript_lines), 3)
+
+    def test_sync_stream_source_restarts_when_chunker_dead_on_same_url(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            session_dir = Path(td)
+            service = self._build_service(session_dir, _FakeClient())
+            chunker = service._chunker
+            self.assertIsInstance(chunker, _FakeChunker)
+            service._active_url = "https://x/live.m3u8"
+            chunker.running = False
+            chunker.start_calls = 0
+
+            service._sync_stream_source()
+
+            self.assertEqual(chunker.start_calls, 1)
+            self.assertEqual(chunker.started_url, "https://x/live.m3u8")
+            self.assertTrue(chunker.running)
+
+    def test_sync_stream_reader_restarts_when_reader_dead_on_same_url(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            session_dir = Path(td)
+            config = RealtimeInsightConfig(
+                enabled=True,
+                pipeline_mode="stream",
+                asr_model="paraformer-realtime-v2",
+            )
+            service = RealtimeInsightService(
+                poller=_FakePoller("https://x/live.m3u8"),
+                session_dir=session_dir,
+                config=config,
+                chunker=_FakeChunker(),
+                client=_FakeClient(),
+                notifier=_FakeNotifier(),
+                log_fn=lambda _: None,
+            )
+            reader = _FakeFrameReader()
+            service._stream_reader = reader  # type: ignore[assignment]
+            service._active_url = "https://x/live.m3u8"
+            reader.running = False
+
+            service._sync_stream_reader_source()
+
+            self.assertEqual(reader.start_calls, 1)
+            self.assertEqual(reader.active_source, "https://x/live.m3u8")
+            self.assertTrue(reader.running)
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from src.live.insight.models import KeywordConfig, RealtimeInsightConfig
 from src.live.insight.openai_client import InsightModelResult
@@ -37,6 +38,12 @@ class _FakeAsrClient:
 
     def send_audio_frame(self, data: bytes) -> bool:
         return bool(data)
+
+
+class _AlwaysFalseAsrClient(_FakeAsrClient):
+    def send_audio_frame(self, data: bytes) -> bool:
+        del data
+        return False
 
 
 class _FakeLlmClient:
@@ -242,6 +249,32 @@ class StreamPipelineTests(unittest.TestCase):
             self.assertIsInstance(meta.get("pre_send_ts_ms"), int)
             self.assertIsInstance(meta.get("pre_send_rel_ms"), int)
             self.assertEqual(int(meta["pre_send_rel_ms"]), int(meta["pre_send_ts_ms"]) - int(meta["stream_t0_ms"]))
+
+    def test_submit_audio_frame_false_triggers_asr_error_callback(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            hotwords = base / "hotwords.json"
+            hotwords.write_text('["签到"]', encoding="utf-8")
+            config = self._build_config(hotwords)
+            pipeline = StreamRealtimeInsightPipeline(
+                session_dir=base,
+                config=config,
+                keywords=KeywordConfig(),
+                llm_client=_FakeLlmClient(),
+                dashscope_api_key="k",
+                notifier=_FakeNotifier(),  # type: ignore[arg-type]
+                asr_client=_AlwaysFalseAsrClient(),  # type: ignore[arg-type]
+                log_fn=lambda _msg: None,
+            )
+            pipeline.start()
+            try:
+                with mock.patch.object(pipeline, "_on_asr_error") as on_asr_error:
+                    ok = pipeline.submit_audio_frame(b"\x00\x01")
+                self.assertFalse(ok)
+                on_asr_error.assert_called_once()
+                self.assertIn("returned False", str(on_asr_error.call_args[0][0]))
+            finally:
+                pipeline.stop()
 
     def test_load_hotwords_raises_when_missing(self) -> None:
         with tempfile.TemporaryDirectory() as td:

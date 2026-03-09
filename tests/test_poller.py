@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import unittest
 from unittest import mock
 
@@ -216,6 +217,61 @@ class PollerTests(unittest.TestCase):
         self.assertFalse(snapshot.success)
         self.assertEqual(snapshot.result_err_msg, "http_error")
         self.assertEqual(snapshot.error, "not-json")
+
+    def test_start_is_idempotent_and_restartable(self) -> None:
+        session = mock.Mock(spec=requests.Session)
+        poller = StreamPoller(
+            session=session,
+            token="tok",
+            timeout=10,
+            course_id=1,
+            sub_id=2,
+            poll_interval=10,
+        )
+        poller.poll_interval = 0.01
+        snapshot = poller.get_snapshot()
+        with mock.patch.object(poller, "_fetch_once", return_value=snapshot):
+            poller.start()
+            time.sleep(0.03)
+            self.assertTrue(poller.is_running())
+            first_thread = poller._thread
+
+            poller.start()
+            self.assertIs(poller._thread, first_thread)
+
+            poller.stop()
+            self.assertFalse(poller.is_running())
+
+            poller.start()
+            time.sleep(0.03)
+            self.assertTrue(poller.is_running())
+            self.assertIsNot(poller._thread, first_thread)
+            poller.stop()
+        self.assertFalse(poller.is_running())
+
+    def test_run_catches_loop_exception_and_keeps_thread_alive(self) -> None:
+        session = mock.Mock(spec=requests.Session)
+        poller = StreamPoller(
+            session=session,
+            token="tok",
+            timeout=10,
+            course_id=1,
+            sub_id=2,
+            poll_interval=10,
+        )
+        poller.poll_interval = 0.01
+        with mock.patch.object(poller, "_fetch_once", side_effect=RuntimeError("boom")):
+            poller.start()
+            try:
+                time.sleep(0.05)
+                self.assertTrue(poller.is_running())
+                snapshot = poller.get_snapshot()
+                self.assertFalse(snapshot.success)
+                self.assertEqual(snapshot.result_err_msg, "poller_loop_exception")
+                self.assertIn("poller loop exception", snapshot.error)
+            finally:
+                poller.stop()
+        self.assertFalse(poller.is_running())
 
 
 if __name__ == "__main__":
