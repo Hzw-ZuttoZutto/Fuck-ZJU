@@ -10,6 +10,16 @@ from src.common.constants import API_BASE
 
 COURSE_DETAIL_URL = "https://classroom.zju.edu.cn/coursedetail"
 LIVE_TEXT = "直播中"
+SUB_ID_KEYS = (
+    "sub_id",
+    "subId",
+    "subid",
+    "course_subject",
+    "course_subject_id",
+    "course_sub_id",
+    "subject_id",
+    "subjectId",
+)
 
 
 @dataclass
@@ -60,33 +70,50 @@ def _normalize_sub_id(value: Any) -> str:
     return text
 
 
+def _iter_dict_nodes(value: Any):
+    if isinstance(value, dict):
+        for child in value.values():
+            yield from _iter_dict_nodes(child)
+        yield value
+    elif isinstance(value, list):
+        for child in value:
+            yield from _iter_dict_nodes(child)
+
+
+def _extract_sub_id_from_item(item: Any) -> str:
+    if not isinstance(item, dict):
+        return ""
+    for key in SUB_ID_KEYS:
+        sub_id = _normalize_sub_id(item.get(key))
+        if sub_id:
+            return sub_id
+
+    # Some responses only expose sub_id in final_sub_setting.id.
+    final_sub_setting = item.get("final_sub_setting")
+    if isinstance(final_sub_setting, dict):
+        sub_id = _normalize_sub_id(
+            final_sub_setting.get("sub_id")
+            or final_sub_setting.get("id")
+            or final_sub_setting.get("course_subject")
+        )
+        if sub_id:
+            return sub_id
+    return ""
+
+
 def _extract_any_sub_id(payload: Any) -> str:
-    if not isinstance(payload, dict):
-        return ""
-    list_obj = payload.get("list")
-    if not isinstance(list_obj, list):
-        return ""
-    for item in list_obj:
-        if not isinstance(item, dict):
-            continue
-        sub_id = _normalize_sub_id(item.get("sub_id"))
+    for item in _iter_dict_nodes(payload):
+        sub_id = _extract_sub_id_from_item(item)
         if sub_id:
             return sub_id
     return ""
 
 
 def _extract_live_sub_id(payload: Any) -> str:
-    if not isinstance(payload, dict):
-        return ""
-    list_obj = payload.get("list")
-    if not isinstance(list_obj, list):
-        return ""
-    for item in list_obj:
-        if not isinstance(item, dict):
-            continue
+    for item in _iter_dict_nodes(payload):
         if not contains_live_text(item):
             continue
-        sub_id = _normalize_sub_id(item.get("sub_id"))
+        sub_id = _extract_sub_id_from_item(item)
         if sub_id:
             return sub_id
     return ""

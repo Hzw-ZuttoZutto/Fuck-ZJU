@@ -78,9 +78,16 @@ def extract_bearer_token_from_cookie_value(cookie_value: str) -> str:
 
 
 class ZJUAuthClient:
-    def __init__(self, timeout: int, tenant_code: str) -> None:
+    def __init__(
+        self,
+        timeout: int,
+        tenant_code: str,
+        *,
+        disable_env_proxy_for_login: bool = True,
+    ) -> None:
         self.timeout = timeout
         self.tenant_code = tenant_code
+        self.disable_env_proxy_for_login = bool(disable_env_proxy_for_login)
 
     def login_and_get_token(
         self,
@@ -90,6 +97,10 @@ class ZJUAuthClient:
         center_course_id: int,
         authcode: str,
     ) -> str:
+        original_trust_env = session.trust_env
+        if self.disable_env_proxy_for_login:
+            session.trust_env = False
+
         forward_url = (
             "https://classroom.zju.edu.cn/coursedetail?"
             f"course_id={center_course_id}&tenant_code={self.tenant_code}"
@@ -100,49 +111,53 @@ class ZJUAuthClient:
             f"&forward={urllib.parse.quote(forward_url, safe='')}"
         )
 
-        login_page = session.get(login_url, timeout=self.timeout, allow_redirects=True)
-        login_page.raise_for_status()
-        action, execution = extract_form_fields(login_page.text)
+        try:
+            login_page = session.get(login_url, timeout=self.timeout, allow_redirects=True)
+            login_page.raise_for_status()
+            action, execution = extract_form_fields(login_page.text)
 
-        kaptcha_status = session.get(
-            f"{CAS_BASE}/v2/getKaptchaStatus", timeout=self.timeout
-        ).text.strip()
-        if kaptcha_status.lower() == "true" and not authcode:
-            raise RuntimeError("CAS requires captcha now. Re-run with --authcode <code>.")
+            kaptcha_status = session.get(
+                f"{CAS_BASE}/v2/getKaptchaStatus", timeout=self.timeout
+            ).text.strip()
+            if kaptcha_status.lower() == "true" and not authcode:
+                raise RuntimeError("CAS requires captcha now. Re-run with --authcode <code>.")
 
-        pubkey_resp = session.get(f"{CAS_BASE}/v2/getPubKey", timeout=self.timeout)
-        pubkey_resp.raise_for_status()
-        pubkey = pubkey_resp.json()
+            pubkey_resp = session.get(f"{CAS_BASE}/v2/getPubKey", timeout=self.timeout)
+            pubkey_resp.raise_for_status()
+            pubkey = pubkey_resp.json()
 
-        modulus = pubkey.get("modulus", "")
-        exponent = pubkey.get("exponent", "")
-        if not modulus or not exponent:
-            raise RuntimeError("CAS public key is missing.")
+            modulus = pubkey.get("modulus", "")
+            exponent = pubkey.get("exponent", "")
+            if not modulus or not exponent:
+                raise RuntimeError("CAS public key is missing.")
 
-        security_js_resp = session.get(f"{CAS_BASE}/js/login/security.js", timeout=self.timeout)
-        security_js_resp.raise_for_status()
+            security_js_resp = session.get(f"{CAS_BASE}/js/login/security.js", timeout=self.timeout)
+            security_js_resp.raise_for_status()
 
-        encrypted_pwd = encrypt_password_with_node(
-            security_js_resp.text,
-            modulus,
-            exponent,
-            password,
-        )
+            encrypted_pwd = encrypt_password_with_node(
+                security_js_resp.text,
+                modulus,
+                exponent,
+                password,
+            )
 
-        post_url = urllib.parse.urljoin("https://zjuam.zju.edu.cn", action)
-        payload = {
-            "username": username,
-            "password": encrypted_pwd,
-            "authcode": authcode,
-            "execution": execution,
-            "_eventId": "submit",
-        }
-        post_resp = session.post(post_url, data=payload, timeout=self.timeout, allow_redirects=True)
-        post_resp.raise_for_status()
+            post_url = urllib.parse.urljoin("https://zjuam.zju.edu.cn", action)
+            payload = {
+                "username": username,
+                "password": encrypted_pwd,
+                "authcode": authcode,
+                "execution": execution,
+                "_eventId": "submit",
+            }
+            post_resp = session.post(post_url, data=payload, timeout=self.timeout, allow_redirects=True)
+            post_resp.raise_for_status()
 
-        for cookie in session.cookies:
-            if cookie.name == "_token":
-                token = extract_bearer_token_from_cookie_value(cookie.value)
-                if token:
-                    return token
-        return ""
+            for cookie in session.cookies:
+                if cookie.name == "_token":
+                    token = extract_bearer_token_from_cookie_value(cookie.value)
+                    if token:
+                        return token
+            return ""
+        finally:
+            if self.disable_env_proxy_for_login:
+                session.trust_env = original_trust_env

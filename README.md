@@ -96,9 +96,9 @@ python -m src.main scan \
 
 ```bash
 python -m src.main scan \
-  --teacher '王强' \
-  --title '编译原理' \
-  --center 83650 \
+  --teacher '章献民' \
+  --title '信息与电子工程导论' \
+  --center 81975 \
   --radius 100 \
   --require-live \
   --live-check-timeout 30 \
@@ -218,6 +218,10 @@ python -m src.main mic-publish \
 | `--tenant-code` | `112` | 租户代码 |
 | `--authcode` | 空 | 验证码（仅登录要求时填写） |
 | `--timeout` | `20` | HTTP 超时秒数 |
+
+补充说明：
+
+- `scan/watch` 的 CAS 登录阶段默认忽略环境代理（`http_proxy`/`https_proxy` 等），一般无需再手动 `env -u ...`。
 
 ### 5.2 `scan` 参数
 
