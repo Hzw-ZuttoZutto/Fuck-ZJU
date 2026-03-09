@@ -44,10 +44,19 @@ class _DingTalkHandler(BaseHTTPRequestHandler):
 
 
 class DingTalkNotifierTests(unittest.TestCase):
-    def _event(self, *, important: bool = True, recovery: bool = False, chunk_file: str = "chunk_20260101_010203.mp3") -> InsightEvent:
+    def _event(
+        self,
+        *,
+        important: bool = True,
+        recovery: bool = False,
+        chunk_seq: int = 7,
+        chunk_file: str = "chunk_20260101_010203.mp3",
+        target_text: str = "",
+        context_text: str = "",
+    ) -> InsightEvent:
         return InsightEvent(
             ts=datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
-            chunk_seq=7,
+            chunk_seq=chunk_seq,
             chunk_file=chunk_file,
             model="gpt-5-mini",
             important=important,
@@ -62,6 +71,8 @@ class DingTalkNotifierTests(unittest.TestCase):
             attempt_count=1,
             context_chunk_count=3,
             is_recovery=recovery,
+            target_text=target_text,
+            context_text=context_text,
         )
 
     def test_build_payload_contains_course_and_recovery_title(self) -> None:
@@ -172,6 +183,90 @@ class DingTalkNotifierTests(unittest.TestCase):
         self.assertEqual(ctx["pre_send_ts_ms"], 2000)
         self.assertEqual(ctx["pre_send_rel_ms"], 450)
         self.assertEqual(ctx["stream_t0_ms"], 1550)
+
+    def test_notify_event_queue_overflow_drops_oldest(self) -> None:
+        notifier = DingTalkNotifier(
+            webhook="https://example.test/robot/send?access_token=x",
+            secret="sec-123",
+            cooldown_sec=0.0,
+            queue_size=2,
+            log_fn=lambda _msg: None,
+        )
+
+        with mock.patch.object(notifier, "_ensure_worker", return_value=None):
+            self.assertTrue(notifier.notify_event(self._event(chunk_seq=1, chunk_file="chunk_1.mp3")))
+            self.assertTrue(notifier.notify_event(self._event(chunk_seq=2, chunk_file="chunk_2.mp3")))
+            self.assertTrue(notifier.notify_event(self._event(chunk_seq=3, chunk_file="chunk_3.mp3")))
+
+        self.assertEqual(notifier._queue.qsize(), 2)
+        first = notifier._queue.get_nowait()
+        second = notifier._queue.get_nowait()
+        assert first is not None and second is not None
+        self.assertEqual(first[0].chunk_seq, 2)
+        self.assertEqual(second[0].chunk_seq, 3)
+
+    def test_notify_event_queued_snapshot_shrinks_large_context(self) -> None:
+        notifier = DingTalkNotifier(
+            webhook="https://example.test/robot/send?access_token=x",
+            secret="sec-123",
+            cooldown_sec=0.0,
+            queue_size=2,
+            log_fn=lambda _msg: None,
+        )
+        original = self._event(target_text="x" * 2000, context_text="y" * 3000)
+
+        with mock.patch.object(notifier, "_ensure_worker", return_value=None):
+            self.assertTrue(notifier.notify_event(original))
+
+        queued = notifier._queue.get_nowait()
+        assert queued is not None
+        queued_event, _ctx = queued
+        self.assertEqual(queued_event.target_text, "")
+        self.assertEqual(queued_event.context_text, "")
+        self.assertEqual(len(original.target_text), 2000)
+        self.assertEqual(len(original.context_text), 3000)
+
+    def test_queue_overflow_log_is_rate_limited(self) -> None:
+        logs: list[str] = []
+        notifier = DingTalkNotifier(
+            webhook="https://example.test/robot/send?access_token=x",
+            secret="sec-123",
+            cooldown_sec=0.0,
+            queue_size=1,
+            log_fn=logs.append,
+        )
+
+        with mock.patch.object(notifier, "_ensure_worker", return_value=None), mock.patch(
+            "src.live.insight.dingtalk.time.monotonic",
+            side_effect=[100.0, 101.0, 101.5, 102.0, 102.5],
+        ):
+            self.assertTrue(notifier.notify_event(self._event(chunk_seq=1, chunk_file="chunk_1.mp3")))
+            self.assertTrue(notifier.notify_event(self._event(chunk_seq=2, chunk_file="chunk_2.mp3")))
+            self.assertTrue(notifier.notify_event(self._event(chunk_seq=3, chunk_file="chunk_3.mp3")))
+
+        overflow_logs = [msg for msg in logs if "queue overflow" in msg]
+        self.assertEqual(len(overflow_logs), 1)
+        self.assertIn("dropped_total=1", overflow_logs[0])
+
+    def test_stop_does_not_block_when_queue_is_full(self) -> None:
+        notifier = DingTalkNotifier(
+            webhook="https://example.test/robot/send?access_token=x",
+            secret="sec-123",
+            cooldown_sec=0.0,
+            queue_size=1,
+            log_fn=lambda _msg: None,
+        )
+        notifier._queue.put_nowait((self._event(chunk_seq=1), {}))
+        worker = mock.Mock()
+        notifier._worker = worker
+
+        notifier.stop()
+
+        worker.join.assert_called_once_with(timeout=5.0)
+        self.assertTrue(notifier._stop_event.is_set())
+        self.assertIsNone(notifier._worker)
+        self.assertEqual(notifier._queue.qsize(), 1)
+        self.assertIsNone(notifier._queue.get_nowait())
 
     def test_deliver_event_writes_trace_rows(self) -> None:
         with tempfile.TemporaryDirectory() as td:

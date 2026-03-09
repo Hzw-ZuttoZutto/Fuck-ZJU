@@ -45,6 +45,20 @@ class MicListenValidationTests(unittest.TestCase):
         code = run_mic_listen(args)
         self.assertEqual(code, 1)
 
+    def test_invalid_dingtalk_queue_size_rejected(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "mic-listen",
+                "--mic-upload-token",
+                "token-1",
+                "--rt-dingtalk-queue-size",
+                "0",
+            ]
+        )
+        code = run_mic_listen(args)
+        self.assertEqual(code, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

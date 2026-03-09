@@ -1011,6 +1011,7 @@ def run_mic_listen(args: argparse.Namespace) -> int:
         profile_enabled=bool(getattr(args, "rt_profile_enabled", False)),
         dingtalk_enabled=bool(getattr(args, "rt_dingtalk_enabled", False)),
         dingtalk_cooldown_sec=max(0.0, float(getattr(args, "rt_dingtalk_cooldown_sec", 30.0))),
+        dingtalk_queue_size=max(1, int(getattr(args, "rt_dingtalk_queue_size", 500))),
         dingtalk_send_timeout_sec=5.0,
         dingtalk_send_retry_count=5,
         log_rotate_max_bytes=max(1024 * 1024, int(getattr(args, "rt_log_rotate_max_bytes", 64 * 1024 * 1024))),
@@ -1035,6 +1036,7 @@ def run_mic_listen(args: argparse.Namespace) -> int:
             webhook=webhook,
             secret=secret,
             cooldown_sec=config.dingtalk_cooldown_sec,
+            queue_size=config.dingtalk_queue_size,
             trace_path=dingtalk_trace_path,
             log_rotate_max_bytes=config.log_rotate_max_bytes,
             log_rotate_backup_count=config.log_rotate_backup_count,
@@ -1280,6 +1282,9 @@ def _validate_mic_listen_realtime_args(args: argparse.Namespace, *, pipeline_mod
         return "--rt-log-rotate-max-bytes must be >= 1048576"
     if rotate_backup_count < 1:
         return "--rt-log-rotate-backup-count must be >= 1"
+    dingtalk_queue_size = int(getattr(args, "rt_dingtalk_queue_size", 500))
+    if dingtalk_queue_size < 1:
+        return "--rt-dingtalk-queue-size must be >= 1"
 
     if pipeline_mode == "stream":
         asr_model = (getattr(args, "rt_asr_model", None) or "").strip()

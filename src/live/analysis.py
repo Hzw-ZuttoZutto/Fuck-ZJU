@@ -120,6 +120,7 @@ def run_analysis(args: argparse.Namespace) -> int:
     )
 
     dingtalk_enabled = bool(getattr(args, "rt_dingtalk_enabled", False))
+    dingtalk_queue_size = max(1, int(getattr(args, "rt_dingtalk_queue_size", 500)))
     notifier = _NoopDingTalkNotifier()
     if dingtalk_enabled:
         webhook, secret, dingtalk_error = resolve_dingtalk_bot_settings()
@@ -130,6 +131,7 @@ def run_analysis(args: argparse.Namespace) -> int:
             webhook=webhook,
             secret=secret,
             cooldown_sec=max(0.0, float(args.rt_dingtalk_cooldown_sec)),
+            queue_size=dingtalk_queue_size,
             metadata=DingTalkNotifierMetadata(
                 course_title=course_meta.title,
                 teacher_name=course_meta.primary_teacher,
@@ -174,6 +176,7 @@ def run_analysis(args: argparse.Namespace) -> int:
         alert_threshold=max(0, min(100, int(args.rt_alert_threshold))),
         dingtalk_enabled=dingtalk_enabled,
         dingtalk_cooldown_sec=max(0.0, float(args.rt_dingtalk_cooldown_sec)),
+        dingtalk_queue_size=dingtalk_queue_size,
         dingtalk_send_timeout_sec=5.0,
         dingtalk_send_retry_count=5,
         log_rotate_max_bytes=max(1024 * 1024, int(getattr(args, "rt_log_rotate_max_bytes", 64 * 1024 * 1024))),
@@ -291,6 +294,9 @@ def _validate_analysis_args(args: argparse.Namespace) -> str:
         return "--rt-log-rotate-max-bytes must be >= 1048576"
     if rotate_backup_count < 1:
         return "--rt-log-rotate-backup-count must be >= 1"
+    dingtalk_queue_size = int(getattr(args, "rt_dingtalk_queue_size", 500))
+    if dingtalk_queue_size < 1:
+        return "--rt-dingtalk-queue-size must be >= 1"
     return ""
 
 

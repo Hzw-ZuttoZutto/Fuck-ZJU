@@ -175,6 +175,7 @@ class RealtimeInsightConfig:
     profile_enabled: bool = False
     dingtalk_enabled: bool = False
     dingtalk_cooldown_sec: float = 30.0
+    dingtalk_queue_size: int = 500
     dingtalk_send_timeout_sec: float = 5.0
     dingtalk_send_retry_count: int = 5
     log_rotate_max_bytes: int = 64 * 1024 * 1024

@@ -167,6 +167,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Cooldown seconds after an accepted DingTalk alert",
     )
     analysis.add_argument(
+        "--rt-dingtalk-queue-size",
+        type=int,
+        default=500,
+        help="Bounded queue size for pending DingTalk notifications",
+    )
+    analysis.add_argument(
         "--rt-context-recent-required",
         type=int,
         default=4,
@@ -370,6 +376,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=30.0,
         help="Cooldown seconds after an accepted DingTalk alert",
+    )
+    mic_listen.add_argument(
+        "--rt-dingtalk-queue-size",
+        type=int,
+        default=500,
+        help="Bounded queue size for pending DingTalk notifications",
     )
     mic_listen.add_argument(
         "--rt-context-min-ready",

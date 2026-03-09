@@ -31,6 +31,7 @@ class MicCliTests(unittest.TestCase):
         self.assertEqual(args.rt_analysis_request_timeout_sec, 15.0)
         self.assertFalse(args.rt_dingtalk_enabled)
         self.assertEqual(args.rt_dingtalk_cooldown_sec, 30.0)
+        self.assertEqual(args.rt_dingtalk_queue_size, 500)
         self.assertFalse(args.rt_profile_enabled)
         self.assertEqual(args.rt_log_rotate_max_bytes, 64 * 1024 * 1024)
         self.assertEqual(args.rt_log_rotate_backup_count, 20)
@@ -90,6 +91,8 @@ class MicCliTests(unittest.TestCase):
                 "--rt-dingtalk-enabled",
                 "--rt-dingtalk-cooldown-sec",
                 "45",
+                "--rt-dingtalk-queue-size",
+                "700",
                 "--rt-log-rotate-max-bytes",
                 "1048576",
                 "--rt-log-rotate-backup-count",
@@ -98,6 +101,7 @@ class MicCliTests(unittest.TestCase):
         )
         self.assertTrue(args.rt_dingtalk_enabled)
         self.assertEqual(args.rt_dingtalk_cooldown_sec, 45.0)
+        self.assertEqual(args.rt_dingtalk_queue_size, 700)
         self.assertEqual(args.rt_log_rotate_max_bytes, 1048576)
         self.assertEqual(args.rt_log_rotate_backup_count, 6)
 

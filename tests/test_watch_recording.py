@@ -37,6 +37,7 @@ def _analysis_args() -> argparse.Namespace:
         rt_alert_threshold=90,
         rt_dingtalk_enabled=False,
         rt_dingtalk_cooldown_sec=30.0,
+        rt_dingtalk_queue_size=500,
         rt_context_recent_required=4,
         rt_context_wait_timeout_sec_1=1.0,
         rt_context_wait_timeout_sec_2=5.0,
@@ -108,6 +109,12 @@ class AnalysisModeTests(unittest.TestCase):
     def test_analysis_requires_valid_hotwords_file(self) -> None:
         args = _analysis_args()
         args.rt_hotwords_file = "/tmp/not_found_hotwords.json"
+        code = run_analysis(args)
+        self.assertEqual(code, 1)
+
+    def test_analysis_rejects_invalid_dingtalk_queue_size(self) -> None:
+        args = _analysis_args()
+        args.rt_dingtalk_queue_size = 0
         code = run_analysis(args)
         self.assertEqual(code, 1)
 

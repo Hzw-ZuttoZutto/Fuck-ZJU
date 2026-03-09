@@ -8,7 +8,7 @@ import queue
 import re
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -19,6 +19,7 @@ from src.common.rotating_log import RotatingLineWriter
 from src.live.insight.models import InsightEvent
 
 _CHUNK_TS_PATTERN = re.compile(r"(\d{8}_\d{6})")
+_QUEUE_OVERFLOW_LOG_INTERVAL_SEC = 10.0
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,7 @@ class DingTalkNotifier:
         webhook: str,
         secret: str,
         cooldown_sec: float = 30.0,
+        queue_size: int = 500,
         send_timeout_sec: float = 5.0,
         send_retry_count: int = 5,
         trace_path: Path | None = None,
@@ -45,6 +47,7 @@ class DingTalkNotifier:
         self.webhook = (webhook or "").strip()
         self.secret = (secret or "").strip()
         self.cooldown_sec = max(0.0, float(cooldown_sec))
+        self.queue_size = max(1, int(queue_size))
         self.send_timeout_sec = max(1.0, float(send_timeout_sec))
         self.send_retry_count = max(1, int(send_retry_count))
         self.trace_path = trace_path
@@ -60,12 +63,16 @@ class DingTalkNotifier:
         self.metadata = metadata or DingTalkNotifierMetadata()
         self._log_fn = log_fn or print
 
-        self._queue: queue.Queue[tuple[InsightEvent, dict[str, int | None]] | None] = queue.Queue()
+        self._queue: queue.Queue[tuple[InsightEvent, dict[str, int | None]] | None] = queue.Queue(
+            maxsize=self.queue_size
+        )
         self._stop_event = threading.Event()
         self._worker: threading.Thread | None = None
         self._state_lock = threading.Lock()
         self._trace_lock = threading.Lock()
         self._last_accepted_at = 0.0
+        self._queue_overflow_dropped = 0
+        self._queue_overflow_last_log_at = 0.0
 
         if not self.webhook:
             raise ValueError("DingTalk webhook is empty")
@@ -80,6 +87,8 @@ class DingTalkNotifier:
         pre_send_rel_ms: int | None = None,
         stream_t0_ms: int | None = None,
     ) -> bool:
+        if self._stop_event.is_set():
+            return False
         if not event.important:
             return False
         if not self._accept_by_cooldown():
@@ -88,21 +97,21 @@ class DingTalkNotifier:
                 f"window={self.cooldown_sec:.1f}s"
             )
             return False
+        queued_event = self._shrink_queued_event(event)
         trace_context = {
             "pre_send_ts_ms": _to_non_negative_int(pre_send_ts_ms),
             "pre_send_rel_ms": _to_non_negative_int(pre_send_rel_ms),
             "stream_t0_ms": _to_non_negative_int(stream_t0_ms),
         }
         self._ensure_worker()
-        self._queue.put((event, trace_context))
-        return True
+        return self._enqueue_with_drop_oldest(queued_event, trace_context)
 
     def stop(self) -> None:
         self._stop_event.set()
         worker = self._worker
         if worker is None:
             return
-        self._queue.put(None)
+        self._enqueue_stop_sentinel()
         worker.join(timeout=5.0)
         self._worker = None
 
@@ -137,6 +146,83 @@ class DingTalkNotifier:
                 return False
             self._last_accepted_at = now
             return True
+
+    @staticmethod
+    def _shrink_queued_event(event: InsightEvent) -> InsightEvent:
+        return replace(
+            event,
+            key_details=list(event.key_details or []),
+            matched_terms=list(event.matched_terms or []),
+            context_missing_ranges=list(event.context_missing_ranges or []),
+            target_text="",
+            context_text="",
+        )
+
+    def _enqueue_with_drop_oldest(self, event: InsightEvent, trace_context: dict[str, int | None]) -> bool:
+        item: tuple[InsightEvent, dict[str, int | None]] = (event, trace_context)
+        try:
+            self._queue.put_nowait(item)
+            return True
+        except queue.Full:
+            pass
+
+        kind, dropped_event = self._evict_one_queued_item()
+        if kind == "event" and dropped_event is not None:
+            self._record_queue_overflow(drop_kind="oldest", dropped_event=dropped_event)
+
+        try:
+            self._queue.put_nowait(item)
+            return True
+        except queue.Full:
+            self._record_queue_overflow(drop_kind="current", dropped_event=event)
+            return False
+
+    def _enqueue_stop_sentinel(self) -> None:
+        while True:
+            try:
+                self._queue.put_nowait(None)
+                return
+            except queue.Full:
+                kind, dropped_event = self._evict_one_queued_item()
+                if kind == "sentinel":
+                    return
+                if kind == "event" and dropped_event is not None:
+                    self._record_queue_overflow(drop_kind="oldest", dropped_event=dropped_event)
+                continue
+
+    def _evict_one_queued_item(self) -> tuple[str, InsightEvent | None]:
+        try:
+            item = self._queue.get_nowait()
+        except queue.Empty:
+            return "empty", None
+        self._queue.task_done()
+        if item is None:
+            try:
+                self._queue.put_nowait(None)
+            except queue.Full:
+                pass
+            return "sentinel", None
+        event, _trace_context = item
+        return "event", event
+
+    def _record_queue_overflow(self, *, drop_kind: str, dropped_event: InsightEvent) -> None:
+        now = time.monotonic()
+        with self._state_lock:
+            self._queue_overflow_dropped += 1
+            dropped_total = self._queue_overflow_dropped
+            should_log = dropped_total == 1
+            if not should_log and (now - self._queue_overflow_last_log_at) >= _QUEUE_OVERFLOW_LOG_INTERVAL_SEC:
+                should_log = True
+            if should_log:
+                self._queue_overflow_last_log_at = now
+            queue_depth = self._queue.qsize()
+        if not should_log:
+            return
+        self._log(
+            f"[rt-dingtalk] queue overflow drop={drop_kind} dropped_total={dropped_total} "
+            f"qsize={queue_depth}/{self.queue_size} dropped_seq={dropped_event.chunk_seq} "
+            f"chunk={dropped_event.chunk_file}"
+        )
 
     def _deliver_event(self, event: InsightEvent, *, trace_context: dict[str, int | None] | None = None) -> None:
         payload = self._build_payload(event)

@@ -258,6 +258,7 @@ python -m src.main mic-publish --target-url http://127.0.0.1:18765 --mic-upload-
 | `--rt-alert-threshold` | `90` | 触发 `[ALERT]` 的阈值 |
 | `--rt-dingtalk-enabled` | 关闭 | 开启钉钉告警推送 |
 | `--rt-dingtalk-cooldown-sec` | `30.0` | 钉钉告警冷却时间（秒） |
+| `--rt-dingtalk-queue-size` | `500` | 钉钉发送队列上限（满时丢最旧保最新） |
 | `--rt-context-recent-required` | `4` | 最近必须可用片段数 |
 | `--rt-context-wait-timeout-sec-1` | `1.0` | 最近片段齐备后额外等待时间 |
 | `--rt-context-wait-timeout-sec-2` | `5.0` | 等待最近片段齐备的最大时长 |
@@ -269,6 +270,7 @@ python -m src.main mic-publish --target-url http://127.0.0.1:18765 --mic-upload-
 - `DASHSCOPE_API_KEY` 必须可用（stream ASR 必需）。
 - `--rt-hotwords-file` 必须是可读的 JSON 数组文件（`[]` 合法）。
 - `--rt-dingtalk-enabled` 可选，不开启时只写本地日志，不发钉钉。
+- `--rt-dingtalk-queue-size` 必须 `>= 1`。
 
 ### 5.5 `mic-listen` 基础参数
 
@@ -304,6 +306,7 @@ python -m src.main mic-publish --target-url http://127.0.0.1:18765 --mic-upload-
 --rt-alert-threshold
 --rt-dingtalk-enabled
 --rt-dingtalk-cooldown-sec
+--rt-dingtalk-queue-size
 --rt-context-recent-required
 --rt-context-wait-timeout-sec-1
 --rt-context-wait-timeout-sec-2
@@ -322,6 +325,7 @@ python -m src.main mic-publish --target-url http://127.0.0.1:18765 --mic-upload-
 - chunk 模式：必须显式传 `--rt-stt-model`。
 - stream 模式：必须显式传 `--rt-asr-model` 且必须启用 `--rt-dingtalk-enabled`。
 - 日志轮转参数约束：`--rt-log-rotate-max-bytes >= 1048576`，`--rt-log-rotate-backup-count >= 1`。
+- 钉钉队列参数约束：`--rt-dingtalk-queue-size >= 1`。
 
 ### 5.7 `mic-publish` 参数
 

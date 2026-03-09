@@ -82,6 +82,7 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(args.rt_alert_threshold, 90)
         self.assertFalse(args.rt_dingtalk_enabled)
         self.assertEqual(args.rt_dingtalk_cooldown_sec, 30.0)
+        self.assertEqual(args.rt_dingtalk_queue_size, 500)
         self.assertEqual(args.rt_context_recent_required, 4)
         self.assertEqual(args.rt_context_wait_timeout_sec_1, 1.0)
         self.assertEqual(args.rt_context_wait_timeout_sec_2, 5.0)
@@ -140,6 +141,8 @@ class CliParserTests(unittest.TestCase):
                 "--rt-dingtalk-enabled",
                 "--rt-dingtalk-cooldown-sec",
                 "45",
+                "--rt-dingtalk-queue-size",
+                "600",
                 "--rt-context-recent-required",
                 "3",
                 "--rt-context-wait-timeout-sec-1",
@@ -172,6 +175,7 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(args.rt_alert_threshold, 88)
         self.assertTrue(args.rt_dingtalk_enabled)
         self.assertEqual(args.rt_dingtalk_cooldown_sec, 45.0)
+        self.assertEqual(args.rt_dingtalk_queue_size, 600)
         self.assertEqual(args.rt_context_recent_required, 3)
         self.assertEqual(args.rt_context_wait_timeout_sec_1, 2.0)
         self.assertEqual(args.rt_context_wait_timeout_sec_2, 9.0)

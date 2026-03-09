@@ -277,6 +277,7 @@ def run_watch(args: argparse.Namespace) -> int:
             translation_targets = _parse_csv_values(getattr(args, "rt_translation_target_languages", "zh"))
             notifier = None
             dingtalk_enabled = bool(args.rt_dingtalk_enabled)
+            dingtalk_queue_size = max(1, int(getattr(args, "rt_dingtalk_queue_size", 500)))
             if pipeline_mode == "stream" and not dingtalk_enabled:
                 print(
                     "Watch failed: stream mode requires DingTalk alert; pass --rt-dingtalk-enabled and configure bot.",
@@ -292,6 +293,7 @@ def run_watch(args: argparse.Namespace) -> int:
                     webhook=webhook,
                     secret=secret,
                     cooldown_sec=max(0.0, float(args.rt_dingtalk_cooldown_sec)),
+                    queue_size=dingtalk_queue_size,
                     metadata=DingTalkNotifierMetadata(
                         course_title=course_meta.title,
                         teacher_name=course_meta.primary_teacher,
@@ -331,6 +333,7 @@ def run_watch(args: argparse.Namespace) -> int:
                 alert_threshold=max(0, min(100, int(args.rt_alert_threshold))),
                 dingtalk_enabled=dingtalk_enabled,
                 dingtalk_cooldown_sec=max(0.0, float(args.rt_dingtalk_cooldown_sec)),
+                dingtalk_queue_size=dingtalk_queue_size,
                 dingtalk_send_timeout_sec=5.0,
                 dingtalk_send_retry_count=5,
                 max_concurrency=max(1, int(args.rt_max_concurrency)),
@@ -444,6 +447,9 @@ def run_watch(args: argparse.Namespace) -> int:
 
 def _validate_watch_realtime_args(args: argparse.Namespace) -> str:
     pipeline_mode = str(getattr(args, "rt_pipeline_mode", "chunk") or "chunk").strip().lower() or "chunk"
+    dingtalk_queue_size = int(getattr(args, "rt_dingtalk_queue_size", 500))
+    if dingtalk_queue_size < 1:
+        return "--rt-dingtalk-queue-size must be >= 1"
     if pipeline_mode == "stream":
         asr_model = (getattr(args, "rt_asr_model", None) or "").strip()
         if not asr_model:
