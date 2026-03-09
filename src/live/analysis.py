@@ -6,6 +6,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from src.auth import LoginTokenManager
 from src.auth.cas_client import ZJUAuthClient
 from src.common.account import resolve_credentials, resolve_dingtalk_bot_settings
 from src.common.course_meta import fetch_course_meta
@@ -42,27 +43,32 @@ def run_analysis(args: argparse.Namespace) -> int:
         return 1
 
     auth = ZJUAuthClient(timeout=args.timeout, tenant_code=args.tenant_code)
-    login_session = create_session(pool_size=8)
+    token_manager = LoginTokenManager(
+        auth_client=auth,
+        username=username,
+        password=password,
+        center_course_id=args.course_id,
+        authcode=args.authcode,
+        refresh_cooldown_sec=30.0,
+        session_factory=lambda: create_session(pool_size=8),
+    )
 
     try:
-        token = auth.login_and_get_token(
-            session=login_session,
-            username=username,
-            password=password,
-            center_course_id=args.course_id,
-            authcode=args.authcode,
-        )
+        ok, refresh_error = token_manager.refresh("initial_login", force=True)
+        if not ok:
+            raise RuntimeError(refresh_error or "token refresh failed")
     except Exception as exc:
         print(f"Login failed: {exc}", file=sys.stderr)
         return 1
 
+    token = token_manager.get_token()
     if not token:
         print("Login succeeded but token is empty; analysis mode cannot continue.", file=sys.stderr)
         return 1
 
     course_meta = fetch_course_meta(
         session=create_session(pool_size=8),
-        token=token,
+        token=token_manager.get_token(),
         timeout=args.timeout,
         course_id=args.course_id,
         retries=1,
@@ -77,7 +83,7 @@ def run_analysis(args: argparse.Namespace) -> int:
 
     join_result = JoinRoomClient(
         session=create_session(pool_size=8),
-        token=token,
+        token=token_manager.get_token(),
         timeout=args.timeout,
         sub_id=args.sub_id,
         user_id=username,
@@ -103,12 +109,14 @@ def run_analysis(args: argparse.Namespace) -> int:
 
     poller = StreamPoller(
         session=create_session(pool_size=32),
-        token=token,
+        token=token_manager.get_token(),
         timeout=args.timeout,
         course_id=args.course_id,
         sub_id=args.sub_id,
         poll_interval=args.poll_interval,
         tenant_code=args.tenant_code,
+        token_provider=token_manager.get_token,
+        token_refresher=token_manager.refresh,
     )
 
     dingtalk_enabled = bool(getattr(args, "rt_dingtalk_enabled", False))

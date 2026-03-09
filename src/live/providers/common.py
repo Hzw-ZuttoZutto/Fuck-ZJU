@@ -1,13 +1,26 @@
 from __future__ import annotations
 
 import json
-from typing import Mapping
+from typing import Callable, Mapping
 
 import requests
 
 from src.common.constants import STREAM_TYPE_NAMES
 from src.common.utils import parse_track_flag, summarize_stream_url, to_int_or_none
 from src.live.models import StreamInfo
+
+_AUTH_HTTP_STATUS = {401, 403}
+_AUTH_MESSAGE_HINTS = (
+    "未登录",
+    "登录过期",
+    "请先登录",
+    "认证失败",
+    "token失效",
+    "token expired",
+    "invalid token",
+    "unauthorized",
+    "not login",
+)
 
 
 def auth_headers(token: str) -> dict[str, str]:
@@ -22,8 +35,47 @@ def request_json(
     endpoint: str,
     params: Mapping[str, object],
     timeout: int,
-    token: str,
+    token: str = "",
+    *,
+    token_provider: Callable[[], str] | None = None,
+    refresh_auth_token: Callable[[str], tuple[bool, str]] | None = None,
 ) -> tuple[dict | None, str]:
+    resolved_token = _resolve_token(token=token, token_provider=token_provider)
+    body, error, auth_failed = _request_json_once(
+        session=session,
+        endpoint=endpoint,
+        params=params,
+        timeout=timeout,
+        token=resolved_token,
+    )
+    if not auth_failed or refresh_auth_token is None:
+        return body, error
+
+    refreshed, refresh_error = refresh_auth_token(error or "auth failure")
+    if not refreshed:
+        return None, f"auth_refresh_failed: {refresh_error or 'refresh callback returned failure'}"
+
+    retry_token = _resolve_token(token=token, token_provider=token_provider)
+    retry_body, retry_error, retry_auth_failed = _request_json_once(
+        session=session,
+        endpoint=endpoint,
+        params=params,
+        timeout=timeout,
+        token=retry_token,
+    )
+    if retry_auth_failed:
+        return None, f"auth_refresh_retry_failed: {retry_error or 'auth failure after refresh'}"
+    return retry_body, retry_error
+
+
+def _request_json_once(
+    *,
+    session: requests.Session,
+    endpoint: str,
+    params: Mapping[str, object],
+    timeout: int,
+    token: str,
+) -> tuple[dict | None, str, bool]:
     try:
         resp = session.get(
             endpoint,
@@ -31,14 +83,103 @@ def request_json(
             headers=auth_headers(token),
             timeout=timeout,
         )
-        resp.raise_for_status()
     except requests.RequestException as exc:
-        return None, str(exc)
+        status_code = _extract_status_code(exc)
+        if status_code in _AUTH_HTTP_STATUS:
+            return None, f"http_status_{status_code}", True
+        return None, str(exc), False
+
+    if resp.status_code in _AUTH_HTTP_STATUS:
+        return None, f"http_status_{resp.status_code}", True
 
     try:
-        return resp.json(), ""
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        status_code = _extract_status_code(exc)
+        if status_code in _AUTH_HTTP_STATUS:
+            return None, f"http_status_{status_code}", True
+        return None, str(exc), False
+
+    try:
+        payload = resp.json()
     except json.JSONDecodeError:
-        return None, resp.text[:300]
+        return None, resp.text[:300], False
+
+    if not isinstance(payload, dict):
+        return None, "response root is not JSON object", False
+
+    auth_error = _extract_auth_error_from_payload(payload)
+    if auth_error:
+        return None, auth_error, True
+    return payload, "", False
+
+
+def _resolve_token(*, token: str, token_provider: Callable[[], str] | None) -> str:
+    if token_provider is None:
+        return str(token or "")
+    try:
+        return str(token_provider() or "")
+    except Exception:
+        return str(token or "")
+
+
+def _extract_status_code(exc: requests.RequestException) -> int | None:
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code
+    return None
+
+
+def _extract_auth_error_from_payload(payload: Mapping[str, object]) -> str:
+    candidates: list[Mapping[str, object]] = [payload]
+    result_obj = payload.get("result")
+    if isinstance(result_obj, dict):
+        candidates.append(result_obj)
+
+    for item in candidates:
+        for code in _extract_numeric_codes(item):
+            if code in _AUTH_HTTP_STATUS:
+                return f"json_auth_code_{code}"
+
+        msg = _extract_text_message(item)
+        if msg and _looks_like_auth_message(msg):
+            return msg
+    return ""
+
+
+def _extract_numeric_codes(item: Mapping[str, object]) -> list[int]:
+    out: list[int] = []
+    for key in ("code", "err", "status", "error_code"):
+        value = item.get(key)
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            out.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _extract_text_message(item: Mapping[str, object]) -> str:
+    for key in ("msg", "message", "errMsg", "error", "detail"):
+        value = item.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _looks_like_auth_message(text: str) -> bool:
+    lowered = text.strip().lower()
+    if not lowered:
+        return False
+    for hint in _AUTH_MESSAGE_HINTS:
+        if hint in lowered or hint in text:
+            return True
+    return False
 
 
 def to_stream_info(

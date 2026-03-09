@@ -10,10 +10,13 @@ from src.live.providers.livingroom_provider import LivingRoomStreamProvider
 
 
 class _Resp:
-    def __init__(self, payload: dict) -> None:
+    def __init__(self, payload: dict, *, status_code: int = 200) -> None:
         self._payload = payload
+        self.status_code = status_code
 
     def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f"http {self.status_code}")
         return
 
     def json(self) -> dict:

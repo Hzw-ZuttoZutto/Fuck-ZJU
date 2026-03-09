@@ -11,11 +11,23 @@ from src.live.poller import StreamPoller
 
 
 class _Resp:
-    def __init__(self, payload: dict | None = None, text: str = "") -> None:
+    def __init__(
+        self,
+        payload: dict | None = None,
+        text: str = "",
+        *,
+        status_code: int = 200,
+    ) -> None:
         self._payload = payload
         self.text = text
+        self.status_code = status_code
 
     def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise requests.HTTPError(
+                f"http {self.status_code}",
+                response=mock.Mock(status_code=self.status_code),
+            )
         return
 
     def json(self) -> dict:
@@ -217,6 +229,102 @@ class PollerTests(unittest.TestCase):
         self.assertFalse(snapshot.success)
         self.assertEqual(snapshot.result_err_msg, "http_error")
         self.assertEqual(snapshot.error, "not-json")
+
+    def test_fetch_retries_once_after_auth_refresh(self) -> None:
+        session = mock.Mock(spec=requests.Session)
+        screen_ok = _Resp(
+            {
+                "success": True,
+                "result": {
+                    "err": 0,
+                    "errMsg": "",
+                    "data": [
+                        {
+                            "type": 3,
+                            "id": "1",
+                            "sub_id": "2",
+                            "source_id": "3",
+                            "stream_id": "4",
+                            "stream_name": "teacher-room",
+                            "video_track": "1",
+                            "voice_track": "1",
+                            "stream_m3u8": "https://x.cmc.zju.edu.cn/t.m3u8",
+                            "stream_play": "",
+                        },
+                    ],
+                },
+            }
+        )
+        rtc_ok = _Resp({"success": True, "result": {"streams": []}})
+
+        token_state = {"value": "expired"}
+        observed_auth_headers: list[str] = []
+        refresh_called = {"count": 0}
+
+        def _refresh(_reason: str) -> tuple[bool, str]:
+            refresh_called["count"] += 1
+            token_state["value"] = "fresh"
+            return True, ""
+
+        def _get_side_effect(_url: str, **kwargs):
+            headers = kwargs.get("headers") or {}
+            observed_auth_headers.append(str(headers.get("Authorization") or ""))
+            if len(observed_auth_headers) == 1:
+                return _Resp({"msg": "未登录"}, status_code=401)
+            if len(observed_auth_headers) == 2:
+                return screen_ok
+            if len(observed_auth_headers) == 3:
+                return rtc_ok
+            raise AssertionError(f"unexpected request count={len(observed_auth_headers)}")
+
+        session.get.side_effect = _get_side_effect
+
+        poller = StreamPoller(
+            session=session,
+            token="expired",
+            timeout=10,
+            course_id=1,
+            sub_id=2,
+            poll_interval=10,
+            token_provider=lambda: token_state["value"],
+            token_refresher=_refresh,
+        )
+        snapshot = poller._fetch_once()
+        self.assertTrue(snapshot.success)
+        self.assertIn("teacher", snapshot.streams)
+        self.assertEqual(refresh_called["count"], 1)
+        self.assertGreaterEqual(len(observed_auth_headers), 3)
+        self.assertEqual(observed_auth_headers[0], "Bearer expired")
+        self.assertEqual(observed_auth_headers[1], "Bearer fresh")
+        metrics = poller.get_metrics()
+        self.assertEqual(int(metrics.get("token_refresh_total", 0)), 1)
+        self.assertEqual(int(metrics.get("token_refresh_failures", 0)), 0)
+
+    def test_fetch_marks_auth_refresh_failure_in_snapshot_error(self) -> None:
+        session = mock.Mock(spec=requests.Session)
+        session.get.side_effect = [
+            _Resp({"msg": "token expired"}, status_code=401),
+            _Resp({"msg": "token expired"}, status_code=401),
+        ]
+
+        def _refresh(_reason: str) -> tuple[bool, str]:
+            return False, "captcha required"
+
+        poller = StreamPoller(
+            session=session,
+            token="expired",
+            timeout=10,
+            course_id=1,
+            sub_id=2,
+            poll_interval=10,
+            token_refresher=_refresh,
+        )
+        snapshot = poller._fetch_once()
+        self.assertFalse(snapshot.success)
+        self.assertTrue(snapshot.error.startswith("auth_refresh_failed:"))
+        metrics = poller.get_metrics()
+        self.assertGreaterEqual(int(metrics.get("token_refresh_total", 0)), 1)
+        self.assertGreaterEqual(int(metrics.get("token_refresh_failures", 0)), 1)
 
     def test_start_is_idempotent_and_restartable(self) -> None:
         session = mock.Mock(spec=requests.Session)

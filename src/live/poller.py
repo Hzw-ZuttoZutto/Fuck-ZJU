@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from typing import Callable
 
 import requests
 
@@ -25,9 +26,13 @@ class StreamPoller:
         sub_id: int,
         poll_interval: float,
         tenant_code: str = "112",
+        token_provider: Callable[[], str] | None = None,
+        token_refresher: Callable[[str], tuple[bool, str]] | None = None,
     ) -> None:
         self.session = session
         self.token = token
+        self._token_provider = token_provider or (lambda: self.token)
+        self._token_refresher = token_refresher
         self.timeout = timeout
         self.course_id = course_id
         self.sub_id = sub_id
@@ -42,6 +47,10 @@ class StreamPoller:
         self._poll_total = 0
         self._poll_failures = 0
         self._consecutive_poll_failures = 0
+        self._token_refresh_total = 0
+        self._token_refresh_failures = 0
+        self._last_token_refresh_at_utc = ""
+        self._last_token_refresh_error = ""
 
         self._meta_provider = MetaStreamProvider(
             session=self.session,
@@ -49,6 +58,8 @@ class StreamPoller:
             timeout=self.timeout,
             course_id=self.course_id,
             sub_id=self.sub_id,
+            token_provider=self._token_provider,
+            refresh_auth_token=self._refresh_auth_token,
         )
         self._livingroom_provider = LivingRoomStreamProvider(
             session=self.session,
@@ -57,6 +68,8 @@ class StreamPoller:
             course_id=self.course_id,
             sub_id=self.sub_id,
             tenant_code=self.tenant_code,
+            token_provider=self._token_provider,
+            refresh_auth_token=self._refresh_auth_token,
         )
 
         self._snapshot = WatchSnapshot(
@@ -110,6 +123,10 @@ class StreamPoller:
                 "last_updated_at_utc": self._snapshot.updated_at_utc,
                 "last_error": self._snapshot.error,
                 "active_provider": self._snapshot.active_provider,
+                "token_refresh_total": self._token_refresh_total,
+                "token_refresh_failures": self._token_refresh_failures,
+                "last_token_refresh_at_utc": self._last_token_refresh_at_utc,
+                "last_token_refresh_error": self._last_token_refresh_error,
             }
 
     def _set_snapshot(self, snapshot: WatchSnapshot) -> None:
@@ -147,6 +164,34 @@ class StreamPoller:
                 current = threading.current_thread()
                 if self._thread is current:
                     self._thread = None
+
+    def _refresh_auth_token(self, reason: str) -> tuple[bool, str]:
+        with self._lock:
+            self._token_refresh_total += 1
+
+        refresher = self._token_refresher
+        if refresher is None:
+            err = "token refresher is unavailable"
+            with self._lock:
+                self._token_refresh_failures += 1
+                self._last_token_refresh_at_utc = now_utc_iso()
+                self._last_token_refresh_error = err
+            return False, err
+
+        try:
+            ok, error = refresher(reason)
+        except Exception as exc:  # pragma: no cover - defensive
+            ok, error = False, str(exc)
+
+        with self._lock:
+            self._last_token_refresh_at_utc = now_utc_iso()
+            if ok:
+                self._last_token_refresh_error = ""
+            else:
+                self._token_refresh_failures += 1
+                self._last_token_refresh_error = str(error or "unknown refresh error")
+        return ok, str(error or "")
+
     # 定时轮询上游接口
     def _fetch_once(self) -> WatchSnapshot:
         meta = self._meta_provider.fetch()

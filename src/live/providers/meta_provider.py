@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from typing import Callable
 
 import requests
 
@@ -11,19 +11,25 @@ from src.live.providers.base import ProviderFetchResult
 from src.live.providers.common import request_json, to_raw_stream, to_stream_info
 
 
-# @dataclass
 class MetaStreamProvider:
-    # session: requests.Session # 这个表示的是类型
-    # token: str
-    # timeout: int
-    # course_id: int
-    # sub_id: int
-    def __init__(self,session,token,timeout,course_id,sub_id):
+    def __init__(
+        self,
+        *,
+        session: requests.Session,
+        token: str,
+        timeout: int,
+        course_id: int,
+        sub_id: int,
+        token_provider: Callable[[], str] | None = None,
+        refresh_auth_token: Callable[[str], tuple[bool, str]] | None = None,
+    ) -> None:
         self.session = session
         self.token = token
-        self.timeout = timeout
-        self.course_id = course_id
-        self.sub_id = sub_id
+        self.timeout = int(timeout)
+        self.course_id = int(course_id)
+        self.sub_id = int(sub_id)
+        self.token_provider = token_provider
+        self.refresh_auth_token = refresh_auth_token
 
     def fetch(self) -> ProviderFetchResult:
         screen_endpoint = f"{API_BASE}/courseapi/index.php/v2/meta/getscreenstream"
@@ -39,6 +45,8 @@ class MetaStreamProvider:
             },
             self.timeout,
             self.token,
+            token_provider=self.token_provider,
+            refresh_auth_token=self.refresh_auth_token,
         )
         rtc_body, rtc_error = request_json(
             self.session,
@@ -49,9 +57,10 @@ class MetaStreamProvider:
             },
             self.timeout,
             self.token,
+            token_provider=self.token_provider,
+            refresh_auth_token=self.refresh_auth_token,
         )
 
-        # 如果screen_body 抓取失败, 返回http_error
         if screen_body is None:
             return ProviderFetchResult(
                 provider="meta",
@@ -63,14 +72,11 @@ class MetaStreamProvider:
                 error=screen_error,
                 diagnostics={"screen_error": screen_error, "rtc_error": rtc_error},
             )
-        
 
-        # 处理screen_body
         screen_result_obj = (screen_body.get("result") if isinstance(screen_body.get("result"), dict) else {})
         result_err = to_int_or_none(screen_result_obj.get("err"))
         result_err_msg = str(screen_result_obj.get("errMsg") or "")
         screen_data = (screen_result_obj.get("data") if isinstance(screen_result_obj.get("data"), list) else [])
-
 
         infos: list[StreamInfo] = []
         raw_streams: list[dict] = []
@@ -87,7 +93,6 @@ class MetaStreamProvider:
             if info.stream_id:
                 by_stream_id[info.stream_id] = info
 
-        # 处理 rtc_data
         rtc_count = 0
         if rtc_body is not None:
             rtc_result_obj = rtc_body.get("result") if isinstance(rtc_body.get("result"), dict) else {}

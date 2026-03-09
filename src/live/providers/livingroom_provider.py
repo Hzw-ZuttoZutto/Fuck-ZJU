@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import urllib.parse
 from dataclasses import dataclass
+from typing import Callable
 
 import requests
 
@@ -19,6 +20,8 @@ class LivingRoomStreamProvider:
     course_id: int
     sub_id: int
     tenant_code: str
+    token_provider: Callable[[], str] | None = None
+    refresh_auth_token: Callable[[str], tuple[bool, str]] | None = None
 
     def fetch(self) -> ProviderFetchResult:
         diagnostics: dict[str, object] = {"architecture": "livingroom"}
@@ -36,6 +39,8 @@ class LivingRoomStreamProvider:
             },
             self.timeout,
             self.token,
+            token_provider=self.token_provider,
+            refresh_auth_token=self.refresh_auth_token,
         )
         if config_body and isinstance(config_body.get("data"), dict):
             data_obj = config_body["data"]
@@ -60,6 +65,8 @@ class LivingRoomStreamProvider:
             {},
             self.timeout,
             self.token,
+            token_provider=self.token_provider,
+            refresh_auth_token=self.refresh_auth_token,
         )
         if infosimple_body and isinstance(infosimple_body.get("params"), dict):
             params = infosimple_body["params"]
@@ -82,6 +89,8 @@ class LivingRoomStreamProvider:
             },
             self.timeout,
             self.token,
+            token_provider=self.token_provider,
+            refresh_auth_token=self.refresh_auth_token,
         )
 
         if live_body is None:
