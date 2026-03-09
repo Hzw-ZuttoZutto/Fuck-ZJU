@@ -361,7 +361,7 @@ python -m src.main mic-publish
 
 ## 7. 自定义关键词、热词与系统提示词
 
-这一节用于按你的业务需求，修改：
+这一节用于按你的课程需求，修改：
 
 - `config/realtime_keywords.json`：自定义实时分析规则（等价于“规则化 prompt 配置”）与紧急关键词。
 - `config/realtime_hotwords.json`：自定义 stream ASR 的转写/翻译热词。
