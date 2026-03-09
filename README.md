@@ -34,7 +34,9 @@ python -m src.main <subcommand> ...
 1. 安装依赖：
 
 ```bash
+conda create -n fuckclass python=3.9
 pip install -r requirements.txt
+sudo apt update && sudo apt install -y ffmpeg
 ```
 
 2. 复制账号模板并填写：

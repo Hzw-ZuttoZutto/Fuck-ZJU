@@ -3,7 +3,6 @@ from __future__ import annotations
 import unittest
 
 from src.cli.parser import build_parser
-from src.simulator.service import _build_runtime_config
 
 
 class CliParserTests(unittest.TestCase):
@@ -222,49 +221,11 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(args.rt_context_wait_timeout_sec_1, 2.0)
         self.assertEqual(args.rt_context_wait_timeout_sec_2, 9.0)
 
-    def test_simulate_mode5_profile_defaults(self) -> None:
+    def test_simulate_subcommand_removed(self) -> None:
         parser = build_parser()
-        args = parser.parse_args(
-            [
-                "simulate",
-                "--mode",
-                "5",
-                "--scenario-file",
-                "tests/simulator/scenarios/mode5/example.yaml",
-            ]
-        )
-        self.assertEqual(args.mode5_profile, "all_chunks_dual")
-        self.assertIsNone(args.mode5_target_seq)
-
-    def test_simulate_mode5_single_chunk_requires_target_seq(self) -> None:
-        parser = build_parser()
-        args = parser.parse_args(
-            [
-                "simulate",
-                "--mode",
-                "5",
-                "--scenario-file",
-                "tests/simulator/scenarios/mode5/example.yaml",
-                "--mode5-profile",
-                "single_chunk_dual",
-            ]
-        )
-        with self.assertRaises(ValueError):
-            _ = _build_runtime_config(args)
-
-    def test_simulate_mode6_profile_ignores_mode5_target(self) -> None:
-        parser = build_parser()
-        args = parser.parse_args(
-            [
-                "simulate",
-                "--mode",
-                "6",
-                "--scenario-file",
-                "tests/simulator/scenarios/mode6/example.yaml",
-            ]
-        )
-        cfg = _build_runtime_config(args)
-        self.assertEqual(int(cfg.mode), 6)
+        with self.assertRaises(SystemExit) as raised:
+            parser.parse_args(["simulate"])
+        self.assertEqual(raised.exception.code, 2)
 
 
 if __name__ == "__main__":

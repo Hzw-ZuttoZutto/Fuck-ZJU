@@ -6,7 +6,6 @@ from src.cli.parser import build_parser
 from src.live.mic import run_mic_list_devices, run_mic_listen, run_mic_publish
 from src.live.server import run_watch
 from src.scan.service import run_scan
-from src.simulator.service import run_simulate
 
 
 def main() -> int:
@@ -21,8 +20,6 @@ def main() -> int:
         return run_mic_publish(args)
     if args.command == "mic-list-devices":
         return run_mic_list_devices(args)
-    if args.command == "simulate":
-        return run_simulate(args)
 
     print(f"Unsupported command: {args.command}", file=sys.stderr)
     return 2
