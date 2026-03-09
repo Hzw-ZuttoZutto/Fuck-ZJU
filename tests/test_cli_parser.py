@@ -188,6 +188,23 @@ class CliParserTests(unittest.TestCase):
             parser.parse_args(["watch"])
         self.assertEqual(raised.exception.code, 2)
 
+    def test_auto_analysis_args(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "auto-analysis",
+                "--config",
+                "config/auto_analysis.json",
+            ]
+        )
+        self.assertEqual(args.command, "auto-analysis")
+        self.assertEqual(args.config, "config/auto_analysis.json")
+        self.assertEqual(args.username, "")
+        self.assertEqual(args.password, "")
+        self.assertEqual(args.tenant_code, "112")
+        self.assertEqual(args.authcode, "")
+        self.assertEqual(args.timeout, 20)
+
 
 if __name__ == "__main__":
     unittest.main()

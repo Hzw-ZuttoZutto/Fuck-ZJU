@@ -203,6 +203,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of rotated realtime log files to retain",
     )
 
+    auto_analysis = subparsers.add_parser(
+        "auto-analysis",
+        help="Run autonomous scheduler for multi-course analysis based on JSON config",
+    )
+    add_common_auth_args(auto_analysis)
+    auto_analysis.add_argument(
+        "--config",
+        required=True,
+        help="Path to auto-analysis JSON config file",
+    )
+
     mic_listen = subparsers.add_parser(
         "mic-listen",
         help="Run standalone microphone upload receiver and realtime insight pipeline on server side",

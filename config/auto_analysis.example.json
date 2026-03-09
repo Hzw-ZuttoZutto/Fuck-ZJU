@@ -1,0 +1,63 @@
+{
+  "timezone": "Asia/Shanghai",
+  "scan": {
+    "center": 82000,
+    "radius": 10000,
+    "workers": 64,
+    "retries": 1,
+    "show_progress": true,
+    "stop_when_all_found": true
+  },
+  "runtime": {
+    "pre_start_notice_minutes": 15,
+    "near_start_probe_interval_sec": 2,
+    "after_start_probe_interval_sec": 2,
+    "late_probe_interval_sec": 30,
+    "near_end_probe_interval_sec": 2,
+    "post_end_guard_minutes": 15,
+    "no_live_alert_interval_sec": 30,
+    "no_live_alert_duration_minutes": 15,
+    "retry_alert_min_interval_sec": 30,
+    "main_tick_sec": 1
+  },
+  "analysis_args": {
+    "poll_interval": 3,
+    "output_dir": "./records",
+    "rt_model": "gpt-4.1-mini",
+    "rt_asr_scene": "zh",
+    "rt_asr_model": "fun-asr-realtime",
+    "rt_hotwords_file": "config/realtime_hotwords.json",
+    "rt_window_sentences": 8,
+    "rt_stream_analysis_workers": 32,
+    "rt_stream_queue_size": 100,
+    "rt_asr_endpoint": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+    "rt_translation_target_languages": "zh",
+    "rt_keywords_file": "config/realtime_keywords.json",
+    "rt_api_base_url": "https://aihubmix.com/v1",
+    "rt_analysis_request_timeout_sec": 15,
+    "rt_analysis_stage_timeout_sec": 60,
+    "rt_analysis_retry_count": 4,
+    "rt_analysis_retry_interval_sec": 0.2,
+    "rt_alert_threshold": 90,
+    "rt_dingtalk_enabled": true,
+    "rt_dingtalk_cooldown_sec": 30,
+    "rt_dingtalk_queue_size": 500,
+    "rt_context_recent_required": 4,
+    "rt_context_wait_timeout_sec_1": 1,
+    "rt_context_wait_timeout_sec_2": 5,
+    "rt_log_rotate_max_bytes": 67108864,
+    "rt_log_rotate_backup_count": 20
+  },
+  "courses": [
+    {
+      "title": "课程A",
+      "teacher": "教师A",
+      "slots": [
+        {
+          "start": "2026-03-09 22:12:00",
+          "end": "2026-03-09 23:13:00"
+        }
+      ]
+    }
+  ]
+}

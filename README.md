@@ -22,10 +22,11 @@ python -m src.main <subcommand> ...
 
 ## 1. 功能总览
 
-面向日常使用，只保留 4 类核心功能：
+面向日常使用，只保留 5 类核心功能：
 
 - `scan`：按教师名 + 课程名扫描课程 ID。
 - `analysis`：直播音频流实时分析（stream ASR + 关键词提炼 + 可选钉钉告警）。
+- `auto-analysis`：按 JSON 课表自动预搜索、自动拉起/停止 analysis、支持同时间多课并发。
 - `mic-listen` + `mic-publish`：独立麦克风采集链路（不依赖 analysis）。
 - `mic-list-devices`：列出本机可用麦克风设备。
 
@@ -123,7 +124,71 @@ python -m src.main analysis \
   --rt-context-wait-timeout-sec-2 5
 ```
 
-### 4.3 `mic-listen(stream)` + `mic-publish(stream)`（实践默认）
+### 4.3 `auto-analysis`（全自动外壳）
+
+```bash
+python -m src.main auto-analysis --config config/auto_analysis.json
+```
+
+示例配置可直接复制 [`config/auto_analysis.example.json`](config/auto_analysis.example.json)。
+下面是同结构示例：
+
+```json
+{
+  "timezone": "Asia/Shanghai",
+  "scan": {
+    "center": 82000,
+    "radius": 10000,
+    "workers": 64,
+    "retries": 1,
+    "show_progress": true,
+    "stop_when_all_found": true
+  },
+  "runtime": {
+    "pre_start_notice_minutes": 15,
+    "near_start_probe_interval_sec": 2,
+    "after_start_probe_interval_sec": 2,
+    "late_probe_interval_sec": 30,
+    "near_end_probe_interval_sec": 2,
+    "post_end_guard_minutes": 15,
+    "no_live_alert_interval_sec": 30,
+    "no_live_alert_duration_minutes": 15,
+    "retry_alert_min_interval_sec": 30,
+    "main_tick_sec": 1
+  },
+  "analysis_args": {
+    "poll_interval": 3,
+    "output_dir": "./records",
+    "rt_model": "gpt-4.1-mini",
+    "rt_asr_scene": "zh",
+    "rt_asr_model": "fun-asr-realtime",
+    "rt_hotwords_file": "config/realtime_hotwords.json",
+    "rt_window_sentences": 8,
+    "rt_stream_analysis_workers": 32,
+    "rt_stream_queue_size": 100,
+    "rt_asr_endpoint": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+    "rt_keywords_file": "config/realtime_keywords.json",
+    "rt_dingtalk_enabled": true
+  },
+  "courses": [
+    {
+      "title": "课程A",
+      "teacher": "教师A",
+      "slots": [
+        {"start": "2026-03-09 22:12:00", "end": "2026-03-09 23:13:00"}
+      ]
+    }
+  ]
+}
+```
+
+说明：
+
+- 仅支持绝对时间段，固定时区 `Asia/Shanghai`。
+- `scan` 阶段按 `center+radius` 倒序批量预搜索，找齐即停；任一课程未命中会整体失败退出。
+- `analysis_args` 为统一全局参数，不能包含 `course_id/sub_id`（由外壳运行时自动注入）。
+
+### 4.4 `mic-listen(stream)` + `mic-publish(stream)`（实践默认）
 
 1. 服务端启动：
 
@@ -182,7 +247,7 @@ python -m src.main mic-publish
 
 ## 5. 参数说明（按功能块）
 
-### 5.1 `scan/analysis` 通用登录参数
+### 5.1 `scan/analysis/auto-analysis` 通用登录参数
 
 | 参数 | 默认值 | 含义 |
 |---|---|---|
@@ -194,7 +259,7 @@ python -m src.main mic-publish
 
 补充说明：
 
-- `scan/analysis` 的 CAS 登录阶段默认忽略环境代理（`http_proxy`/`https_proxy` 等），一般无需再手动 `env -u ...`。
+- `scan/analysis/auto-analysis` 的 CAS 登录阶段默认忽略环境代理（`http_proxy`/`https_proxy` 等），一般无需再手动 `env -u ...`。
 
 ### 5.2 `scan` 参数
 
@@ -256,7 +321,18 @@ python -m src.main mic-publish
 - `analysis` 模式必须显式传 `--rt-dingtalk-enabled`，并且机器人配置（`DINGTALK_WEBHOOK` / `DINGTALK_SECRET`）必须可用。
 - `--rt-dingtalk-queue-size` 必须 `>= 1`。
 
-### 5.5 `mic-listen` 基础参数
+### 5.5 `auto-analysis` 参数
+
+| 参数 | 默认值 | 含义 |
+|---|---|---|
+| `--config` | 必填 | 自动调度配置 JSON 路径 |
+| `--username` | 空 | 统一认证账号；不传则读 `.account` |
+| `--password` | 空 | 统一认证密码；不传则读 `.account` |
+| `--tenant-code` | `112` | 租户代码 |
+| `--authcode` | 空 | 验证码（仅登录要求时填写） |
+| `--timeout` | `20` | HTTP 超时秒数 |
+
+### 5.6 `mic-listen` 基础参数
 
 | 参数 | 默认值 | 含义 |
 |---|---|---|
@@ -267,7 +343,7 @@ python -m src.main mic-publish
 | `--mic-chunk-max-bytes` | `10485760` | 单次上传最大字节数 |
 | `--mic-chunk-dir` | `_rt_chunks_mic` | 接收切片目录（相对路径时挂到 `session-dir` 下） |
 
-### 5.6 `mic-listen` 实时参数
+### 5.7 `mic-listen` 实时参数
 
 `mic-listen` 与 `analysis` 共享的 stream 分析参数如下（`mic-listen` 还额外支持 chunk 相关参数）：
 
@@ -311,7 +387,7 @@ python -m src.main mic-publish
 - 日志轮转参数约束：`--rt-log-rotate-max-bytes >= 1048576`，`--rt-log-rotate-backup-count >= 1`。
 - 钉钉队列参数约束：`--rt-dingtalk-queue-size >= 1`。
 
-### 5.7 `mic-publish` 参数
+### 5.8 `mic-publish` 参数
 
 | 参数 | 默认值 | 适用模式 | 含义 |
 |---|---|---|---|
@@ -329,7 +405,7 @@ python -m src.main mic-publish
 | `--retry-max-sec` | `8.0` | 全部 | 重试最大退避 |
 | `--scan-interval-sec` | `0.2` | chunk | 本地切片扫描周期 |
 
-### 5.8 `mic-list-devices` 参数
+### 5.9 `mic-list-devices` 参数
 
 | 参数 | 默认值 | 含义 |
 |---|---|---|

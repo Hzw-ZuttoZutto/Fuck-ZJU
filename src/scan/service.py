@@ -4,7 +4,8 @@ import argparse
 import concurrent.futures
 import json
 import sys
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Callable, Optional
 
 import requests
 
@@ -17,6 +18,43 @@ from src.common.course_meta import (
 from src.common.http import get_thread_session
 from src.scan.live_check import check_course_live_status
 
+
+@dataclass(frozen=True)
+class CourseScanTarget:
+    teacher: str
+    title: str
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return self.title, self.teacher
+
+
+@dataclass
+class CourseScanMatch:
+    course_id: int
+    title: str
+    teachers: list[str]
+    target_teacher: str
+
+
+@dataclass
+class CourseBatchScanResult:
+    center: int
+    radius: int
+    total_candidates: int
+    scanned: int
+    matches: dict[tuple[str, str], CourseScanMatch]
+    target_keys: list[tuple[str, str]] = field(default_factory=list)
+
+    @property
+    def matched_count(self) -> int:
+        return len(self.matches)
+
+    @property
+    def missing_keys(self) -> list[tuple[str, str]]:
+        return [key for key in self.target_keys if key not in self.matches]
+
+
 def query_course_worker(
     token: str,
     timeout: int,
@@ -26,6 +64,143 @@ def query_course_worker(
     session = get_thread_session()
     data = query_course_detail(session, token, timeout, course_id, retries)
     return course_id, data
+
+
+def scan_courses_batch(
+    *,
+    token: str,
+    timeout: int,
+    retries: int,
+    center: int,
+    radius: int,
+    targets: list[CourseScanTarget],
+    workers: int,
+    reverse: bool = True,
+    stop_when_all_found: bool = True,
+    verbose: bool = False,
+    on_progress: Optional[Callable[[int, int, int, int], None]] = None,
+) -> CourseBatchScanResult:
+    start_id = int(center) - int(radius)
+    end_id = int(center) + int(radius)
+    ordered_ids = list(range(start_id, end_id + 1))
+    if reverse:
+        ordered_ids.reverse()
+
+    unique_targets: dict[tuple[str, str], CourseScanTarget] = {}
+    for target in targets:
+        key = target.key
+        if key in unique_targets:
+            continue
+        unique_targets[key] = target
+
+    target_keys = list(unique_targets.keys())
+    if not target_keys:
+        result = CourseBatchScanResult(
+            center=int(center),
+            radius=int(radius),
+            total_candidates=len(ordered_ids),
+            scanned=0,
+            matches={},
+            target_keys=[],
+        )
+        return result
+
+    matches: dict[tuple[str, str], CourseScanMatch] = {}
+    scanned = 0
+    total = len(ordered_ids)
+
+    def progress_hook() -> None:
+        if on_progress is None:
+            return
+        try:
+            on_progress(scanned, total, len(matches), len(target_keys))
+        except Exception:
+            return
+
+    def handle_result(course_id: int, data: Optional[dict]) -> bool:
+        nonlocal scanned
+        scanned += 1
+        if not data:
+            progress_hook()
+            return False
+
+        title = str(data.get("title", "") or "").strip()
+        teachers = course_teachers(data)
+        if verbose:
+            print(f"[batch-scan] cid={course_id} title={title} teachers={','.join(teachers)}")
+
+        for key, target in unique_targets.items():
+            if key in matches:
+                continue
+            if title != target.title:
+                continue
+            if target.teacher not in teachers:
+                continue
+            matches[key] = CourseScanMatch(
+                course_id=int(course_id),
+                title=title,
+                teachers=list(teachers),
+                target_teacher=target.teacher,
+            )
+            if verbose:
+                print(
+                    f"[batch-scan][MATCH] cid={course_id} title={title} "
+                    f"teacher={target.teacher} teachers={','.join(teachers)}"
+                )
+        progress_hook()
+        return stop_when_all_found and len(matches) >= len(target_keys)
+
+    if workers <= 1:
+        single_session = requests.Session()
+        for cid in ordered_ids:
+            data = query_course_detail(single_session, token, timeout, cid, retries)
+            should_stop = handle_result(cid, data)
+            if should_stop:
+                break
+    else:
+        max_workers = max(1, int(workers))
+        max_in_flight = max(max_workers * 4, max_workers)
+        next_index = 0
+        pending: dict[concurrent.futures.Future, int] = {}
+        should_stop = False
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+            while True:
+                while (not should_stop) and next_index < total and len(pending) < max_in_flight:
+                    cid = ordered_ids[next_index]
+                    next_index += 1
+                    future = pool.submit(query_course_worker, token, timeout, retries, cid)
+                    pending[future] = cid
+
+                if not pending:
+                    break
+
+                done, _ = concurrent.futures.wait(
+                    pending.keys(),
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                for future in done:
+                    cid = pending.pop(future)
+                    try:
+                        result_cid, data = future.result()
+                    except Exception:
+                        result_cid, data = cid, None
+                    should_stop = handle_result(result_cid, data) or should_stop
+
+                if should_stop:
+                    for outstanding in list(pending.keys()):
+                        outstanding.cancel()
+                    pending.clear()
+                    break
+
+    result = CourseBatchScanResult(
+        center=int(center),
+        radius=int(radius),
+        total_candidates=total,
+        scanned=scanned,
+        matches=matches,
+        target_keys=target_keys,
+    )
+    return result
 
 
 def run_scan(args: argparse.Namespace) -> int:
