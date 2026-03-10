@@ -7,6 +7,18 @@ import requests
 
 from src.common.constants import API_BASE
 
+_COURSE_DETAIL_HEADERS = {
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh_cn",
+    "Origin": "https://classroom.zju.edu.cn",
+    "Referer": "https://classroom.zju.edu.cn/",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/122.0.0.0 Safari/537.36"
+    ),
+}
+
 
 @dataclass
 class CourseMeta:
@@ -57,7 +69,8 @@ def query_course_detail(
     course_id: int,
     retries: int,
 ) -> Optional[dict]:
-    headers = {"Accept-Language": "zh_cn"}
+    # WAF now rejects bare python-requests signatures; keep browser-like headers.
+    headers = dict(_COURSE_DETAIL_HEADERS)
     if token:
         headers["Authorization"] = f"Bearer {token}"
 

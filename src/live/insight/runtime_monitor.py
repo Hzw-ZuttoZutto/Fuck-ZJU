@@ -21,6 +21,7 @@ class AnalysisRuntimeObserver:
         heartbeat_interval_sec: float = 10.0,
         p0_cooldown_sec: float = 15.0,
         p1_cooldown_sec: float = 45.0,
+        enable_data_stall_alert: bool = True,
         data_stall_threshold_sec: float = 15.0,
         data_stall_recent_frame_window_sec: float = 5.0,
         reconnect_p1_threshold_sec: float = 20.0,
@@ -32,6 +33,7 @@ class AnalysisRuntimeObserver:
         self._notifier = notifier
         self._log_fn = log_fn or print
         self._heartbeat_interval_sec = max(0.5, float(heartbeat_interval_sec))
+        self._enable_data_stall_alert = bool(enable_data_stall_alert)
         self._data_stall_threshold_sec = max(1.0, float(data_stall_threshold_sec))
         self._data_stall_recent_frame_window_sec = max(1.0, float(data_stall_recent_frame_window_sec))
         self._reconnect_p1_threshold_sec = max(1.0, float(reconnect_p1_threshold_sec))
@@ -324,6 +326,10 @@ class AnalysisRuntimeObserver:
         stream_metrics: dict[str, object],
         stage_metrics: dict[str, object],
     ) -> None:
+        if not self._enable_data_stall_alert:
+            self._data_stall_active = False
+            return
+
         frame_total = _to_int(stream_metrics.get("audio_frames_in_total"))
         final_total = _to_int(stream_metrics.get("asr_final_total"))
 

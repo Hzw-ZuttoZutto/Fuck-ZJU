@@ -23,6 +23,9 @@ from src.live.joiner import JoinRoomClient
 from src.live.poller import StreamPoller
 from src.live.recording.models import build_session_folder_name
 
+_RUNTIME_ENABLE_DATA_STALL_ALERT = False
+_RUNTIME_DATA_STALL_THRESHOLD_SEC = 60.0
+
 
 def run_analysis(args: argparse.Namespace) -> int:
     validation_error = _validate_analysis_args(args)
@@ -211,7 +214,8 @@ def run_analysis(args: argparse.Namespace) -> int:
         heartbeat_interval_sec=10.0,
         p0_cooldown_sec=15.0,
         p1_cooldown_sec=45.0,
-        data_stall_threshold_sec=15.0,
+        enable_data_stall_alert=_RUNTIME_ENABLE_DATA_STALL_ALERT,
+        data_stall_threshold_sec=_RUNTIME_DATA_STALL_THRESHOLD_SEC,
         reconnect_p1_threshold_sec=20.0,
         reconnect_p0_threshold_sec=60.0,
         log_rotate_max_bytes=log_rotate_max_bytes,
@@ -274,7 +278,16 @@ def run_analysis(args: argparse.Namespace) -> int:
             "Realtime DingTalk alert enabled: "
             f"cooldown={insight_config.dingtalk_cooldown_sec:.1f}s"
         )
-    print("Realtime runtime monitor enabled: heartbeat=10s, alert_cooldown(P0=15s,P1=45s)")
+    data_stall_status = (
+        f"data_stall_threshold={_RUNTIME_DATA_STALL_THRESHOLD_SEC:.0f}s"
+        if _RUNTIME_ENABLE_DATA_STALL_ALERT
+        else "data_stall=off"
+    )
+    print(
+        "Realtime runtime monitor enabled: "
+        f"heartbeat=10s, alert_cooldown(P0=15s,P1=45s), "
+        f"{data_stall_status}"
+    )
     print("Press Ctrl+C to stop.")
 
     poller.start()

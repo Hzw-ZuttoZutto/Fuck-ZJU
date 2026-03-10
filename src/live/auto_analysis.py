@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import base64
+import fcntl
 import hashlib
 import hmac
 import json
+import os
 import queue
 import signal
 import subprocess
@@ -96,8 +98,13 @@ class CourseSlotRuntime:
     start_notice_sent: bool = False
     end_notice_sent: bool = False
     active_sub_id: str = ""
+    has_started_once: bool = False
     last_probe_mono: float = 0.0
+    last_probe_checked: bool = False
+    last_probe_is_live: bool = False
+    last_probe_at: datetime | None = None
     last_no_live_alert_mono: float = 0.0
+    last_probe_failure_alert_mono: float = 0.0
     last_retry_alert_mono: float = 0.0
     last_subid_missing_alert_mono: float = 0.0
     start_attempt_total: int = 0
@@ -194,6 +201,99 @@ class AutoLogQueue:
                 self._writer.append(item)
             finally:
                 self._queue.task_done()
+
+
+class AutoAnalysisInstanceLock:
+    def __init__(self, *, config_path: Path) -> None:
+        self._config_path = config_path
+        self._lock_path = config_path.with_name(f"{config_path.name}.lock")
+        self._fh = None
+
+    @property
+    def lock_path(self) -> Path:
+        return self._lock_path
+
+    def acquire(self) -> tuple[bool, str]:
+        self._lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fh = self._lock_path.open("a+", encoding="utf-8")
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            owner = self._read_owner_payload()
+            try:
+                fh.close()
+            except Exception:
+                pass
+            return False, self._format_owner(owner)
+        except OSError as exc:
+            try:
+                fh.close()
+            except Exception:
+                pass
+            return False, f"lock acquire failed: {exc}"
+
+        payload = {
+            "pid": os.getpid(),
+            "config_path": str(self._config_path),
+            "started_at": datetime.now(_SH_TZ).isoformat(),
+        }
+        try:
+            fh.seek(0)
+            fh.truncate(0)
+            fh.write(json.dumps(payload, ensure_ascii=False))
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        except Exception:
+            pass
+        self._fh = fh
+        return True, ""
+
+    def release(self) -> None:
+        fh = self._fh
+        if fh is None:
+            return
+        try:
+            fh.seek(0)
+            fh.truncate(0)
+            fh.flush()
+            os.fsync(fh.fileno())
+        except Exception:
+            pass
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        try:
+            fh.close()
+        except Exception:
+            pass
+        self._fh = None
+
+    def _read_owner_payload(self) -> dict[str, str]:
+        try:
+            raw = self._lock_path.read_text(encoding="utf-8").strip()
+            if not raw:
+                return {}
+            payload = json.loads(raw)
+        except Exception:
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        return {str(k): str(v) for k, v in payload.items()}
+
+    def _format_owner(self, payload: dict[str, str]) -> str:
+        pid = str(payload.get("pid", "")).strip()
+        started_at = str(payload.get("started_at", "")).strip()
+        config_path = str(payload.get("config_path", "")).strip()
+        parts = [f"lock_file={self._lock_path}"]
+        if pid:
+            parts.append(f"owner_pid={pid}")
+        if started_at:
+            parts.append(f"owner_started_at={started_at}")
+        if config_path:
+            parts.append(f"owner_config={config_path}")
+        return ", ".join(parts)
 
 
 class DingTalkMarkdownSender:
@@ -303,6 +403,7 @@ class AnalysisProcessController:
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                start_new_session=True,
             )
             return True, ""
         except Exception as exc:
@@ -323,24 +424,16 @@ class AnalysisProcessController:
             self._expected_stop = False
             return
 
-        try:
-            proc.send_signal(signal.SIGINT)
-        except Exception:
-            pass
+        self._send_process_group_signal(proc, signal.SIGINT)
         if self._wait_process_exit(proc, timeout_sec=5.0):
             return
 
-        try:
-            proc.terminate()
-        except Exception:
-            pass
+        self._send_process_group_signal(proc, signal.SIGTERM)
         if self._wait_process_exit(proc, timeout_sec=5.0):
             return
 
-        try:
-            proc.kill()
-        except Exception:
-            pass
+        kill_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
+        self._send_process_group_signal(proc, kill_signal)
         _ = self._wait_process_exit(proc, timeout_sec=2.0)
 
     def _wait_process_exit(self, proc: subprocess.Popen, *, timeout_sec: float) -> bool:
@@ -355,6 +448,36 @@ class AnalysisProcessController:
             time.sleep(0.1)
         return False
 
+    def _send_process_group_signal(self, proc: subprocess.Popen, signum: int) -> None:
+        if proc.poll() is not None:
+            return
+        try:
+            pgid = os.getpgid(proc.pid)
+        except ProcessLookupError:
+            return
+        except Exception as exc:
+            self._log_fn(
+                f"[slot] getpgid failed label={self.slot_label} pid={getattr(proc, 'pid', '?')} error={exc}"
+            )
+            try:
+                proc.send_signal(signum)
+            except Exception:
+                pass
+            return
+
+        try:
+            os.killpg(pgid, signum)
+        except ProcessLookupError:
+            return
+        except Exception as exc:
+            self._log_fn(
+                f"[slot] killpg failed label={self.slot_label} pgid={pgid} signum={int(signum)} error={exc}"
+            )
+            try:
+                proc.send_signal(signum)
+            except Exception:
+                pass
+
 
 class AutoAnalysisScheduler:
     def __init__(
@@ -366,6 +489,8 @@ class AutoAnalysisScheduler:
         notifier: DingTalkMarkdownSender,
         slots: list[CourseSlotRuntime],
         log_queue: AutoLogQueue,
+        stop_event: threading.Event | None = None,
+        stop_reason_ref: dict[str, str] | None = None,
     ) -> None:
         self.args = args
         self.config = config
@@ -377,7 +502,11 @@ class AutoAnalysisScheduler:
         self._runtime = config.runtime
         self._analysis_args = dict(config.analysis_args)
         self._live_session = create_session(pool_size=16)
+        # Avoid system proxy/WAF intermediate pages that break live-status JSON.
+        self._live_session.trust_env = False
         self._token_refresh_last_mono = 0.0
+        self._stop_event = stop_event
+        self._stop_reason_ref = stop_reason_ref or {}
         self._controllers: dict[str, AnalysisProcessController] = {
             slot.slot_id: AnalysisProcessController(slot_label=slot.label(), log_fn=self.log)
             for slot in slots
@@ -387,6 +516,10 @@ class AutoAnalysisScheduler:
         self.log(f"[auto-analysis] schedule loaded slots={len(self.slots)}")
         try:
             while True:
+                if self._is_stop_requested():
+                    reason = self._stop_reason()
+                    self.log(f"[auto-analysis] stop requested ({reason}), stopping all running analyses")
+                    return 130
                 now = datetime.now(self._tz)
                 self._maybe_refresh_token()
 
@@ -399,7 +532,10 @@ class AutoAnalysisScheduler:
                 if unfinished <= 0:
                     self.log("[auto-analysis] all slots finished; exiting")
                     return 0
-                time.sleep(max(0.2, float(self._runtime.main_tick_sec)))
+                if self._wait_next_tick():
+                    reason = self._stop_reason()
+                    self.log(f"[auto-analysis] stop requested ({reason}), stopping all running analyses")
+                    return 130
         except KeyboardInterrupt:
             self.log("[auto-analysis] interrupted by user, stopping all running analyses")
             return 130
@@ -409,6 +545,24 @@ class AutoAnalysisScheduler:
                 self._live_session.close()
             except Exception:
                 pass
+
+    def _is_stop_requested(self) -> bool:
+        event = self._stop_event
+        if event is None:
+            return False
+        return bool(event.is_set())
+
+    def _stop_reason(self) -> str:
+        reason = str(self._stop_reason_ref.get("reason", "") or "").strip()
+        return reason or "signal"
+
+    def _wait_next_tick(self) -> bool:
+        wait_sec = max(0.2, float(self._runtime.main_tick_sec))
+        event = self._stop_event
+        if event is None:
+            time.sleep(wait_sec)
+            return False
+        return bool(event.wait(timeout=wait_sec))
 
     def _tick_slot(self, slot: CourseSlotRuntime, *, now: datetime) -> None:
         controller = self._controllers[slot.slot_id]
@@ -495,10 +649,20 @@ class AutoAnalysisScheduler:
         result: LiveCheckResult,
     ) -> None:
         controller = self._controllers[slot.slot_id]
+        slot.last_probe_at = now
+        slot.last_probe_checked = bool(result.checked)
+        slot.last_probe_is_live = bool(result.is_live and result.checked)
         if not result.checked:
+            slot.last_probe_is_live = False
             slot.last_probe_error = str(result.last_error or "probe_unavailable")
             self.log(
                 f"[slot] probe unavailable label={slot.label()} error={slot.last_probe_error} hint={result.hint}"
+            )
+            self._maybe_send_probe_failure_alert(
+                slot=slot,
+                now=now,
+                now_mono=now_mono,
+                result=result,
             )
             return
 
@@ -567,6 +731,7 @@ class AutoAnalysisScheduler:
             return
 
         slot.active_sub_id = sub_id
+        slot.has_started_once = True
         slot.start_attempt_total += 1
         slot.state = "RUNNING"
         if not slot.start_notice_sent:
@@ -584,6 +749,12 @@ class AutoAnalysisScheduler:
         )
 
     def _maybe_send_no_live_alert(self, *, slot: CourseSlotRuntime, now: datetime) -> None:
+        if slot.has_started_once:
+            return
+        if not slot.last_probe_checked:
+            return
+        if slot.last_probe_is_live:
+            return
         alert_until = slot.start_at + timedelta(minutes=max(0, self._runtime.no_live_alert_duration_minutes))
         if now < slot.start_at or now > alert_until:
             return
@@ -604,6 +775,44 @@ class AutoAnalysisScheduler:
                 f"- 计划开始：{slot.start_at.strftime('%Y-%m-%d %H:%M:%S')}",
                 f"- 当前时间：{now.strftime('%Y-%m-%d %H:%M:%S')}",
                 f"- 已延迟：{int(delay_sec)} 秒",
+            ]
+        )
+        self._send_dingtalk(title=title, text=text, slot=slot)
+
+    def _maybe_send_probe_failure_alert(
+        self,
+        *,
+        slot: CourseSlotRuntime,
+        now: datetime,
+        now_mono: float,
+        result: LiveCheckResult,
+    ) -> None:
+        controller = self._controllers[slot.slot_id]
+        if controller.is_running():
+            return
+        alert_until = slot.start_at + timedelta(minutes=max(0, self._runtime.no_live_alert_duration_minutes))
+        if now < slot.start_at or now > alert_until:
+            return
+        if (
+            slot.last_probe_failure_alert_mono > 0
+            and (now_mono - slot.last_probe_failure_alert_mono) < max(1.0, self._runtime.no_live_alert_interval_sec)
+        ):
+            return
+        slot.last_probe_failure_alert_mono = now_mono
+        error_text = str(result.last_error or "dynamic_status_unavailable").strip() or "dynamic_status_unavailable"
+        if len(error_text) > 300:
+            error_text = error_text[:297] + "..."
+        hint = str(result.hint or "dynamic_status_unavailable").strip() or "dynamic_status_unavailable"
+        title = "直播状态探测失败提醒"
+        text = "\n".join(
+            [
+                "# 直播状态探测失败提醒",
+                "",
+                f"- 课程：{slot.course_title} | {slot.teacher}",
+                f"- 计划开始：{slot.start_at.strftime('%Y-%m-%d %H:%M:%S')}",
+                f"- 当前时间：{now.strftime('%Y-%m-%d %H:%M:%S')}",
+                f"- hint={hint}",
+                f"- error={error_text}",
             ]
         )
         self._send_dingtalk(title=title, text=text, slot=slot)
@@ -761,73 +970,116 @@ def run_auto_analysis(args: argparse.Namespace) -> int:
         print(f"Credential error: {cred_error}", file=sys.stderr)
         return 1
 
-    output_root = _resolve_output_root(config.analysis_args)
-    run_dir = output_root / f"auto_analysis_{datetime.now(_SH_TZ).strftime('%Y%m%d_%H%M%S')}"
-    run_dir.mkdir(parents=True, exist_ok=True)
-    log_queue = AutoLogQueue(path=run_dir / "auto_analysis.log")
-    log = log_queue.log
-    log(f"[auto-analysis] config={config_path}")
-    log(f"[auto-analysis] run_dir={run_dir}")
+    instance_lock = AutoAnalysisInstanceLock(config_path=config_path)
+    lock_ok, lock_detail = instance_lock.acquire()
+    if not lock_ok:
+        detail = lock_detail or f"lock_file={instance_lock.lock_path}"
+        print(
+            "Auto-analysis failed: another instance is already running "
+            f"({detail})",
+            file=sys.stderr,
+        )
+        return 1
+
+    stop_event = threading.Event()
+    stop_reason_ref: dict[str, str] = {"reason": ""}
+    signal_installed = False
+    previous_sigint = None
+    previous_sigterm = None
+
+    if threading.current_thread() is threading.main_thread():
+        previous_sigint = signal.getsignal(signal.SIGINT)
+        previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+        def _handle_stop_signal(signum, _frame) -> None:
+            if stop_event.is_set():
+                return
+            try:
+                signame = signal.Signals(int(signum)).name.lower()
+            except Exception:
+                signame = str(signum)
+            stop_reason_ref["reason"] = f"signal_{signame}"
+            stop_event.set()
+
+        signal.signal(signal.SIGINT, _handle_stop_signal)
+        signal.signal(signal.SIGTERM, _handle_stop_signal)
+        signal_installed = True
 
     try:
-        auth = ZJUAuthClient(timeout=int(args.timeout), tenant_code=str(args.tenant_code))
-        token_manager = LoginTokenManager(
-            auth_client=auth,
-            username=username,
-            password=password,
-            center_course_id=int(config.scan.center),
-            authcode=str(args.authcode or ""),
-            refresh_cooldown_sec=30.0,
-            session_factory=lambda: create_session(pool_size=8),
-        )
-        ok, token_error = token_manager.refresh("initial_login", force=True)
-        if not ok:
-            log(f"[auto-analysis] login failed: {token_error}")
-            return 1
+        output_root = _resolve_output_root(config.analysis_args)
+        run_dir = output_root / f"auto_analysis_{datetime.now(_SH_TZ).strftime('%Y%m%d_%H%M%S')}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        log_queue = AutoLogQueue(path=run_dir / "auto_analysis.log")
+        log = log_queue.log
+        log(f"[auto-analysis] config={config_path}")
+        log(f"[auto-analysis] run_dir={run_dir}")
 
-        validation_errors, validated_meta = _validate_configured_courses(
-            config=config,
-            token=token_manager.get_token(),
-            timeout=int(args.timeout),
-            retries=int(config.scan.retries),
-        )
-        if validation_errors:
-            log(f"[auto-analysis] precheck failed total_errors={len(validation_errors)}")
-            for line in validation_errors:
-                log(f"[auto-analysis] precheck error: {line}")
-            return 1
+        try:
+            auth = ZJUAuthClient(timeout=int(args.timeout), tenant_code=str(args.tenant_code))
+            token_manager = LoginTokenManager(
+                auth_client=auth,
+                username=username,
+                password=password,
+                center_course_id=int(config.scan.center),
+                authcode=str(args.authcode or ""),
+                refresh_cooldown_sec=30.0,
+                session_factory=lambda: create_session(pool_size=8),
+            )
+            ok, token_error = token_manager.refresh("initial_login", force=True)
+            if not ok:
+                log(f"[auto-analysis] login failed: {token_error}")
+                return 1
 
-        for course in config.courses:
-            meta = validated_meta.get(int(course.course_id))
-            teachers = ",".join(meta[1]) if meta is not None else ""
-            log(
-                f"[auto-analysis] precheck ok course_id={course.course_id} "
-                f"title={course.title} teacher={course.teacher} teachers={teachers}"
+            validation_errors, validated_meta = _validate_configured_courses(
+                config=config,
+                token=token_manager.get_token(),
+                timeout=int(args.timeout),
+                retries=int(config.scan.retries),
+            )
+            if validation_errors:
+                log(f"[auto-analysis] precheck failed total_errors={len(validation_errors)}")
+                for line in validation_errors:
+                    log(f"[auto-analysis] precheck error: {line}")
+                return 1
+
+            for course in config.courses:
+                meta = validated_meta.get(int(course.course_id))
+                teachers = ",".join(meta[1]) if meta is not None else ""
+                log(
+                    f"[auto-analysis] precheck ok course_id={course.course_id} "
+                    f"title={course.title} teacher={course.teacher} teachers={teachers}"
+                )
+
+            webhook, secret, dingtalk_error = resolve_dingtalk_bot_settings()
+            if dingtalk_error:
+                log(f"[auto-analysis] dingtalk config error: {dingtalk_error}")
+                return 1
+            notifier = DingTalkMarkdownSender(
+                webhook=webhook,
+                secret=secret,
+                timeout_sec=5.0,
+                retry_count=3,
             )
 
-        webhook, secret, dingtalk_error = resolve_dingtalk_bot_settings()
-        if dingtalk_error:
-            log(f"[auto-analysis] dingtalk config error: {dingtalk_error}")
-            return 1
-        notifier = DingTalkMarkdownSender(
-            webhook=webhook,
-            secret=secret,
-            timeout_sec=5.0,
-            retry_count=3,
-        )
-
-        slots = _build_slot_runtime(config=config)
-        scheduler = AutoAnalysisScheduler(
-            args=args,
-            config=config,
-            token_manager=token_manager,
-            notifier=notifier,
-            slots=slots,
-            log_queue=log_queue,
-        )
-        return scheduler.run()
+            slots = _build_slot_runtime(config=config)
+            scheduler = AutoAnalysisScheduler(
+                args=args,
+                config=config,
+                token_manager=token_manager,
+                notifier=notifier,
+                slots=slots,
+                log_queue=log_queue,
+                stop_event=stop_event,
+                stop_reason_ref=stop_reason_ref,
+            )
+            return scheduler.run()
+        finally:
+            log_queue.close()
     finally:
-        log_queue.close()
+        if signal_installed:
+            signal.signal(signal.SIGINT, previous_sigint)
+            signal.signal(signal.SIGTERM, previous_sigterm)
+        instance_lock.release()
 
 
 def load_auto_analysis_config(path: Path) -> AutoAnalysisConfig:

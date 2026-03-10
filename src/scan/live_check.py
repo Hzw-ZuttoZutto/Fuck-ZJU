@@ -173,7 +173,23 @@ def check_course_live_status(
         except requests.RequestException as exc:
             last_error = f"live_api_http_error: {exc}"
         except ValueError as exc:
-            last_error = f"live_api_json_error: {exc}"
+            snippet = ""
+            content_type = ""
+            status_code = 0
+            try:
+                status_code = int(getattr(live_resp, "status_code", 0) or 0)
+                content_type = str(getattr(live_resp, "headers", {}).get("content-type", "") or "").strip()
+                raw_text = str(getattr(live_resp, "text", "") or "")
+                snippet = " ".join(raw_text.split())[:180]
+            except Exception:
+                snippet = ""
+            if snippet:
+                last_error = (
+                    f"live_api_json_error: {exc}; status={status_code}; "
+                    f"content_type={content_type}; snippet={snippet}"
+                )
+            else:
+                last_error = f"live_api_json_error: {exc}"
         else:
             live_sub_id = _extract_live_sub_id(payload)
             fallback_sub_id = _extract_any_sub_id(payload)
