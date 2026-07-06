@@ -1,31 +1,18 @@
-# ZJU-Class-Assistant 使用门户
+# ZJU-Class-Assistant
 
+ZJU-Class-Assistant 用于监听浙江大学课程直播中的课堂通知，并将识别到的作业、小测、调课、考试安排等信息推送到钉钉。
 
+程序会登录课程系统、定位课程直播、读取直播音频，并通过 ASR 和 LLM 做实时转写与事件判断。也可以不接入课程直播，使用本机麦克风链路调试 ASR、关键词和提示词配置。
 
+> 本项目仅用于个人学习和提醒。请遵守课程要求、平台规则和隐私边界；课程信息以教师、课程平台和学校通知为准。
 
-##### 本入第一次写开源的小玩具, 欢迎大家多提issue吖:）
-##### 目前关键词命中只支持 小测/作业/签到 , 并且热词覆盖范围狭窄 且 system prompt只是粗浅设计, 欢迎大家提交特殊场景无法识别的问题, 如果能附上怎么修改就最好啦！
+## 功能
 
-## 警告
-##### 项目超长期运行保守最大硬盘消耗在25G左右(用于存储可观测日志), 当前项目还没有长期运行日志分析, 且会在很长一段时间处于测试阶段，更何况大量的代码由codex 5.3辅助完成很可能有bug，所以现在还别太相信（出问题后果自负（雾））
-
-## 关于价格
-##### 目前保守估计,使用gpt-4.1-mini + fun-asr-realtime 一个月花费在30~40 rmb左右,相信这相比于你宝贵的大学青春，这点不算什么（）
-
-
-## 项目定位与核心功能
-
-项目定位：
-
-- 面向“上课实用场景”的课堂直播辅助工具，聚焦“快速找到课程、稳定获取直播音频、实时提取紧急事项并通知”。
-- 面向完全不想上课, 但是又不想错过课堂关键信息的ZJUers
-
-核心功能：
-
-- 课程扫描：按教师名与课程名在课程 ID 区间内快速定位目标课程。
-- 直播流实时分析：从课堂直播拉取教师音频流，执行 stream ASR + 关键词分析 + 钉钉告警。
-- 独立麦克风链路：支持 `mic-listen + mic-publish` 在无 analysis 场景下单独运行实时分析。
-- 独立麦克风链路主要用于做提示词可信测试，让你对自己配置的关键词、热词、系统提示词有立刻的、直观的反馈
+- `scan`：按教师名和课程名扫描课程 ID，并可筛选正在直播的课程。
+- `analysis`：接入指定课程直播，进行实时转写、事件分析和钉钉提醒。
+- `auto-analysis`：按 JSON 课表自动启动和停止多门课程的分析任务。
+- `mic-listen` / `mic-publish`：不依赖课程直播，使用本机麦克风测试实时分析链路。
+- `tingwu-process`：对 `analysis` 生成的听悟任务做课后转写和摘要后处理。
 
 统一入口：
 
@@ -33,159 +20,173 @@
 python -m src.main <subcommand> ...
 ```
 
-## 1. 功能总览
+## 最快路径
 
-面向日常使用，只保留 5 类核心功能：
+### 课程直播路径
 
-- `scan`：按教师名 + 课程名扫描课程 ID。
-- `analysis`：直播音频流实时分析（stream ASR + 关键词提炼 + 可选钉钉告警）。
-- `auto-analysis`：按 JSON 课表自动预搜索、自动拉起/停止 analysis、支持同时间多课并发。
-- `mic-listen` + `mic-publish`：独立麦克风采集链路（不依赖 analysis）。
-- `mic-list-devices`：列出本机可用麦克风设备。
+1. 在 Linux / WSL / 服务器环境安装 Python 依赖、Node.js 和 ffmpeg。
+2. 复制 `account.example` 为 `.account`，填写登录账号、ASR、LLM 和钉钉机器人配置。
+3. 用 `scan` 找到目标课程的 `course_id` / `sub_id`。
+4. 用 `analysis` 启动实时分析。
+5. 看到程序创建会话目录并持续写入 `realtime_*.jsonl` / `realtime_insights.log`，说明链路已经启动；按 `Ctrl+C` 停止。
 
-## 2. 配置环境, 密码
+### 麦克风调试路径
 
-1. 安装依赖：
+1. 准备 ASR、LLM 和钉钉机器人配置。
+2. 启动 `mic-listen` 服务端。
+3. 在采集端用 `mic-list-devices` 查看设备名，再用 `mic-publish` 推送麦克风音频。
+4. 观察会话目录中的转写、分析日志和钉钉提醒。
+
+## 运行环境
+
+推荐环境：
+
+- Python 3.10+
+- Node.js，CAS 登录阶段会调用 `node -e` 做密码加密
+- `ffmpeg` / `ffprobe`
+- Linux、WSL 或服务器环境用于长期运行 `analysis` / `auto-analysis`
+
+平台说明：
+
+- `auto-analysis` 使用 `fcntl` 文件锁，不支持原生 Windows。
+- `mic-publish` 和 `mic-list-devices` 当前使用 Windows `dshow` 采集麦克风设备。
+- 如果需要长期跑课程监听，建议把服务端放在 Linux / WSL / 服务器上；麦克风采集端可单独在 Windows 上运行。
+
+安装依赖：
+
+Linux / WSL：
 
 ```bash
-conda create -n fuckclass python=3.9
-conda activate fuckclass
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-sudo apt update && sudo apt install -y ffmpeg
+
+sudo apt update
+sudo apt install -y ffmpeg nodejs
 ```
 
-2. 复制账号模板并填写：
+Windows 麦克风采集端：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+Windows 采集端还需要安装 ffmpeg，并确保 `ffmpeg` 在 `PATH` 中。
+
+## 配置账号和密钥
+
+复制模板：
 
 ```bash
-cp account .account
+cp account.example .account
 ```
 
+`.account` 是本地私密文件，已经被 `.gitignore` 忽略，不要提交。
 
-## 3. `.account` 填写说明
+常用字段：
 
-- 读取文件：仓库根目录 `.account`。
-- 键名大小写不敏感（内部统一按小写解析）。
+| 字段                                       | 用途                                                                                  |
+| ------------------------------------------ | ------------------------------------------------------------------------------------- |
+| `USERNAME` / `PASSWORD`                | 浙大统一认证登录                                                                      |
+| `OPENAI_API_KEY` 或 `AIHUBMIX_API_KEY` | 实时事件分析                                                                          |
+| `OPENAI_BASE_URL`                        | OpenAI 兼容网关地址，可选；使用官方 OpenAI Key 时通常留空                             |
+| `ZAI_API_KEY` / `GLM_API_KEY`          | 使用`glm-*` 模型时需要                                                              |
+| `DASHSCOPE_API_KEY`                      | DashScope 流式 ASR                                                                    |
+| `DINGTALK_WEBHOOK` / `DINGTALK_SECRET` | 钉钉机器人提醒；`analysis`、`auto-analysis` 和 stream `mic-listen` 当前要求启用 |
+| `ALIBABA_CLOUD_ACCESS_KEY_ID` 等         | 启用`--tingwu-enabled` 时需要                                                       |
 
-### 3.1 字段说明
+不同场景的最小配置：
 
-| 键名 | 必填 | 用于什么功能 | 含义 |
-|---|---|---|---|
-| `USERNAME` | 是（`scan/analysis`） | `scan`、`analysis` | 浙大统一认证账号 |
-| `PASSWORD` | 是（`scan/analysis`） | `scan`、`analysis` | 浙大统一认证密码 |
-| `OPENAI_API_KEY` | 与 `AIHUBMIX_API_KEY` 二选一 | `analysis` / `mic-listen` 实时分析 | OpenAI 兼容文本/语音能力 Key |
-| `AIHUBMIX_API_KEY` | 与 `OPENAI_API_KEY` 二选一 | `analysis` / `mic-listen` 实时分析 | AIHubMix 网关 Key |
-| `ZAI_API_KEY` | `--rt-model` 以 `glm-` 开头时必填（可与 `GLM_API_KEY` 二选一） | `analysis` / `mic-listen` 实时分析 | GLM 系列模型 API Key（主键名） |
-| `GLM_API_KEY` | `--rt-model` 以 `glm-` 开头时可用 | `analysis` / `mic-listen` 实时分析 | GLM 系列模型 API Key（兼容别名） |
-| `OPENAI_BASE_URL` | 否 | `analysis` / `mic-listen` 实时分析 | OpenAI 兼容网关地址 |
-| `DASHSCOPE_API_KEY` | stream 模式必填 | `analysis` / `mic-listen(stream)` | DashScope 实时 ASR Key |
-| `DINGTALK_WEBHOOK` | `analysis` 必填；`mic-listen` 开启告警时必填 | `analysis` / `mic-listen` 的 `--rt-dingtalk-enabled` | 钉钉机器人 Webhook |
-| `DINGTALK_SECRET` | `analysis` 必填；`mic-listen` 开启告警时必填 | `analysis` / `mic-listen` 的 `--rt-dingtalk-enabled` | 钉钉机器人签名 Secret |
-| `ALIBABA_CLOUD_ACCESS_KEY_ID` | `analysis --tingwu-enabled` 必填 | `analysis` 课后听悟后处理 | 阿里云访问密钥 ID（标准键名，严格要求） |
-| `ALIBABA_CLOUD_ACCESS_KEY_SECRET` | `analysis --tingwu-enabled` 必填 | `analysis` 课后听悟后处理 | 阿里云访问密钥 Secret（标准键名，严格要求） |
-| `TINGWU_APP_KEY` | `analysis --tingwu-enabled` 必填 | `analysis` 课后听悟后处理 | 通义听悟项目 AppKey（不是 `DASHSCOPE_API_KEY`） |
-| `TINGWU_OSS_BUCKET` | `analysis --tingwu-enabled` 必填 | `analysis` 课后听悟后处理 | OSS Bucket 名称 |
-| `TINGWU_OSS_REGION` | `analysis --tingwu-enabled` 必填 | `analysis` 课后听悟后处理 | OSS 地域（如 `cn-beijing`） |
-| `TINGWU_OSS_ENDPOINT` | `analysis --tingwu-enabled` 必填 | `analysis` 课后听悟后处理 | OSS Endpoint（如 `oss-cn-beijing.aliyuncs.com`） |
+| 场景                 | 需要填写                                                 |
+| -------------------- | -------------------------------------------------------- |
+| `scan`             | `USERNAME` / `PASSWORD`                              |
+| `analysis`         | 登录账号、`DASHSCOPE_API_KEY`、LLM Key、钉钉机器人配置 |
+| `auto-analysis`    | 与`analysis` 相同，另需课表 JSON                       |
+| stream`mic-listen` | `DASHSCOPE_API_KEY`、LLM Key、钉钉机器人配置           |
+| `--tingwu-enabled` | 阿里云访问密钥、听悟 AppKey、OSS Bucket/Region/Endpoint  |
 
-### 3.2 优先级规则
+## 基本用法
 
-- 登录凭据：CLI `--username/--password` > `.account`。
-- OpenAI/AIHubMix Key：`.account` > 环境变量。
-- GLM Key：`.account` > 环境变量（优先 `ZAI_API_KEY`，兼容 `GLM_API_KEY`）。
-- Base URL：`.account` > 环境变量。
-- DashScope Key：`.account` > 环境变量。
-- DingTalk 机器人：`.account` > 环境变量。
-- Tingwu/OSS 凭据：`.account` > 环境变量（仅支持标准键名，不兼容 `ACCESS_KEY_ID/ACCESS_KEY_SECRET`）。
-- 仅配置 `AIHUBMIX_API_KEY` 且未设置 Base URL 时，默认使用 `https://aihubmix.com/v1`。
-- 当 `--rt-model` 以 `glm-` 开头且未显式设置 `--rt-api-base-url` 时，默认使用 `https://open.bigmodel.cn/api/paas/v4/`。
-- 当 `--rt-model` 以 `glm-` 开头且 `--rt-api-base-url` 仍为 AIHubMix 地址时，会自动忽略该地址并改走 GLM 链路（无需手工删配置）。
+### 1. 扫描课程
 
-## 4. 实践默认参数配置（可直接复制）
-
-### 4.1 课程扫描（默认）
-此脚本用于帮助你快速（并不快）基于课程名称，开课老师确定正在直播的课程course_id 和sub_id
+先根据教师名和课程名找到课程 ID：
 
 ```bash
 python -m src.main scan \
-  --teacher '章献民' \
-  --title '信息与电子工程导论' \
-  --center 81975 \
-  --radius 100 \
+  --teacher "教师姓名" \
+  --title "课程名称" \
+  --center 82000 \
+  --radius 10000 \
   --require-live \
-  --live-check-timeout 30 \
-  --live-check-interval 2 \
   --workers 64
 ```
 
-### 4.2 `analysis` + stream 实时分析（实践默认）
+输出中的 `course_id` 和 `sub_id` 可用于后续 `analysis`。
 
+参数说明：
 
+- `--center` 是扫描中心课程 ID。
+- `--radius` 是向前后扩展的扫描范围。
+- `--require-live` 只保留正在直播的结果；如果不是上课时间，可以先去掉它确认课程是否能被找到。
+
+### 2. 分析一门正在直播的课程
+
+最小常用命令：
 
 ```bash
 python -m src.main analysis \
-  --course-id <使用上面搜到的课程id> \
-  --sub-id <使用上面搜到的sub_id> \
+  --course-id <course_id> \
+  --sub-id <sub_id> \
+  --output-dir ./records \
+  --rt-asr-model fun-asr-realtime \
+  --rt-dingtalk-enabled
+```
+
+包含常用选项的示例：
+
+```bash
+python -m src.main analysis \
+  --course-id <course_id> \
+  --sub-id <sub_id> \
   --poll-interval 3 \
   --output-dir ./records \
   --rt-model gpt-4.1-mini \
   --rt-asr-scene zh \
   --rt-asr-model fun-asr-realtime \
   --rt-hotwords-file config/realtime_hotwords.json \
+  --rt-keywords-file config/realtime_keywords.json \
   --rt-window-sentences 8 \
   --rt-stream-analysis-workers 32 \
   --rt-stream-queue-size 100 \
   --rt-asr-endpoint wss://dashscope.aliyuncs.com/api-ws/v1/inference \
   --rt-api-base-url https://aihubmix.com/v1 \
-  --rt-keywords-file config/realtime_keywords.json \
-  --rt-analysis-request-timeout-sec 15 \
-  --rt-analysis-stage-timeout-sec 60 \
-  --rt-analysis-retry-count 4 \
-  --rt-analysis-retry-interval-sec 0.2 \
   --rt-alert-threshold 90 \
-  --rt-dingtalk-enabled \
-  --rt-dingtalk-cooldown-sec 30 \
-  --rt-context-recent-required 4 \
-  --rt-context-wait-timeout-sec-1 1 \
-  --rt-context-wait-timeout-sec-2 5 \
-  --tingwu-enabled \
-  --tingwu-poll-interval-sec 30 \
-  --tingwu-max-wait-hours 6
+  --rt-dingtalk-enabled
 ```
 
-`--tingwu-enabled` 打开后会额外启动课程整段音频录制；`analysis` 退出后会异步拉起 `tingwu-process` 子进程执行 OSS 上传与听悟任务，主链路不会等待该子进程完成。
+启用 `--tingwu-enabled` 后，程序会额外录制整段音频，并在 `analysis` 退出后异步启动听悟后处理。
 
-### 4.3 `auto-analysis`（全自动外壳）
+### 3. 按课表自动运行
+
+复制示例配置：
+
+```bash
+cp config/auto_analysis.example.json config/auto_analysis.local.json
+```
+
+运行：
 
 ```bash
 python -m src.main auto-analysis --config config/auto_analysis.local.json
 ```
 
-示例配置可直接复制 [`config/auto_analysis.example.json`](config/auto_analysis.example.json)。
-下面是同结构示例：
+一个最小配置大致如下：
 
 ```json
 {
   "timezone": "Asia/Shanghai",
-  "scan": {
-    "center": 82000,
-    "radius": 10000,
-    "workers": 64,
-    "retries": 1,
-    "show_progress": true,
-    "stop_when_all_found": true
-  },
-  "runtime": {
-    "pre_start_notice_minutes": 15,
-    "near_start_probe_interval_sec": 2,
-    "after_start_probe_interval_sec": 2,
-    "late_probe_interval_sec": 30,
-    "near_end_probe_interval_sec": 2,
-    "post_end_guard_minutes": 15,
-    "no_live_alert_interval_sec": 30,
-    "no_live_alert_duration_minutes": 15,
-    "retry_alert_min_interval_sec": 30,
-    "main_tick_sec": 1
-  },
   "analysis_args": {
     "poll_interval": 3,
     "output_dir": "./records",
@@ -193,15 +194,9 @@ python -m src.main auto-analysis --config config/auto_analysis.local.json
     "rt_asr_scene": "zh",
     "rt_asr_model": "fun-asr-realtime",
     "rt_hotwords_file": "config/realtime_hotwords.json",
-    "rt_window_sentences": 8,
-    "rt_stream_analysis_workers": 32,
-    "rt_stream_queue_size": 100,
-    "rt_asr_endpoint": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
     "rt_keywords_file": "config/realtime_keywords.json",
     "rt_dingtalk_enabled": true,
-    "tingwu_enabled": false,
-    "tingwu_poll_interval_sec": 30,
-    "tingwu_max_wait_hours": 6
+    "tingwu_enabled": false
   },
   "courses": [
     {
@@ -209,26 +204,30 @@ python -m src.main auto-analysis --config config/auto_analysis.local.json
       "title": "课程A",
       "teacher": "教师A",
       "slots": [
-        {"start": "2026-03-09 22:12:00", "end": "2026-03-09 23:13:00"}
+        {
+          "start": "2099-03-09 08:00:00",
+          "end": "2099-03-09 09:35:00"
+        }
       ]
     }
   ]
 }
 ```
 
-说明：
+注意：
 
-- 仅支持绝对时间段，固定时区 `Asia/Shanghai`。
-- `courses[].course_id` 为必填，启动前会校验：`course_id` 可查、标题精确匹配、教师命中。
-- 任一课程校验失败会整体阻断启动（fail-fast）。
-- `scan` 区块仅做兼容保留，不再参与 `course_id` 映射推断。
-- `analysis_args` 为统一全局参数，不能包含 `course_id/sub_id`（由外壳运行时自动注入）。
-- 当 `analysis_args.tingwu_enabled=true` 时，`auto-analysis` 启动前会做听悟远端预检（鉴权探测 + OSS 上传/签名读/删除探针），任一步失败即启动失败。
-- 启动时若某个 slot 已经超过 `end + post_end_guard_minutes`，会被静默标记为历史课程并直接跳过，不再补发 `课程结束` 钉钉提醒。
+- `courses[].course_id` 必填。
+- `sub_id` 不需要写进课表，调度器会在课程时间附近探测直播状态并从接口返回中取得。
+- 启动前会校验 `course_id`、课程标题和教师是否一致。
+- `analysis_args` 里不要写 `course_id` / `sub_id`，调度器会在运行时注入。
+- 示例里的日期请替换成未来课程时间；已经结束的 slot 会被当作历史课程跳过。
+- 个人课表建议写在 `config/*.local.json`，这些文件已被 `.gitignore` 忽略。
 
-### 4.4 `mic-listen(stream)` + `mic-publish(stream)`（实践默认）
+## 独立麦克风链路
 
-1. 服务端启动：
+这条链路用于测试 ASR、关键词、系统提示词和钉钉提醒，不需要课程直播。
+
+启动服务端：
 
 ```bash
 SESSION_DIR="mic_session_$(date +%Y%m%d_%H%M%S)"
@@ -237,374 +236,141 @@ python -m src.main mic-listen \
   --host 127.0.0.1 \
   --port 18765 \
   --session-dir "$SESSION_DIR" \
-  --mic-upload-token "micstream001" \
+  --mic-upload-token "change-this-token" \
   --rt-pipeline-mode stream \
   --rt-dingtalk-enabled \
-  --rt-dingtalk-cooldown-sec 0 \
   --rt-asr-scene zh \
   --rt-asr-model fun-asr-realtime \
   --rt-hotwords-file config/realtime_hotwords.json \
+  --rt-keywords-file config/realtime_keywords.json \
   --rt-window-sentences 8 \
   --rt-stream-analysis-workers 32 \
   --rt-stream-queue-size 100 \
-  --rt-asr-endpoint wss://dashscope.aliyuncs.com/api-ws/v1/inference \
-  --rt-chunk-seconds 10 \
-  --rt-model gpt-4.1-mini \
-  --rt-keywords-file config/realtime_keywords.json \
-  --rt-analysis-request-timeout-sec 15 \
-  --rt-analysis-stage-timeout-sec 60 \
-  --rt-analysis-retry-count 4 \
-  --rt-analysis-retry-interval-sec 0.2 \
-  --rt-context-recent-required 4 \
-  --rt-context-wait-timeout-sec-1 1 \
-  --rt-context-wait-timeout-sec-2 5
+  --rt-model gpt-4.1-mini
 ```
 
-2. 本机转发端口（如果 `mic-listen` 在远端机器）：
+如果服务端在远程机器上，可先转发端口：
 
 ```bash
 ssh -N -L 18765:127.0.0.1:18765 <your-server>
 ```
 
-3. 本机查看设备并发布：
+在采集端列出麦克风设备并推送音频：
 
 ```bash
 python -m src.main mic-list-devices
 
-python -m src.main mic-publish 
+python -m src.main mic-publish \
   --target-url http://127.0.0.1:18765 \
-  --mic-upload-token "micstream001" \
+  --mic-upload-token "change-this-token" \
   --device "你的麦克风设备名" \
   --rt-pipeline-mode stream \
-  --stream-frame-duration-ms 120 \
-  --request-timeout-sec 20 \
-  --retry-base-sec 1.0 \
-  --retry-max-sec 12.0
-
+  --stream-frame-duration-ms 120
 ```
 
-## 5. 参数说明（按功能块）
+## 自定义识别规则
 
-### 5.1 `scan/analysis/auto-analysis` 通用登录参数
+实时分析主要依赖三个配置文件：
 
-| 参数 | 默认值 | 含义 |
-|---|---|---|
-| `--username` | 空 | 统一认证账号；不传则读 `.account` |
-| `--password` | 空 | 统一认证密码；不传则读 `.account` |
-| `--tenant-code` | `112` | 租户代码 |
-| `--authcode` | 空 | 验证码（仅登录要求时填写） |
-| `--timeout` | `20` | HTTP 超时秒数 |
+| 文件                                  | 作用                                 |
+| ------------------------------------- | ------------------------------------ |
+| `config/realtime_keywords.json`     | 事件分组、关键词、典型短语和细节线索 |
+| `config/realtime_hotwords.json`     | 提供给 DashScope ASR 的热词          |
+| `config/realtime_system_prompt.txt` | 约束 LLM 如何判断和输出              |
 
-补充约束：
+修改配置后需要重启 `analysis` 或 `mic-listen`。
 
-- `courses[]` 中每条课程必须包含 `course_id`，且启动时会对 `course_id/title/teacher` 做一致性校验。
-
-补充说明：
-
-- `scan/analysis/auto-analysis` 的 CAS 登录阶段默认忽略环境代理（`http_proxy`/`https_proxy` 等），一般无需再手动 `env -u ...`。
-
-### 5.2 `scan` 参数
-
-| 参数 | 默认值 | 含义 |
-|---|---|---|
-| `--teacher` | 必填 | 精确匹配教师名 |
-| `--title` | 必填 | 精确匹配课程标题 |
-| `--center` | `81889` | 扫描中心课程 ID |
-| `--radius` | `200` | 扫描半径（即 `[center-radius, center+radius]`） |
-| `--workers` | `min(64, max(4, cpu*2))` | 并发请求数 |
-| `--retries` | `1` | 单请求失败重试次数 |
-| `--verbose` | 关闭 | 输出每条被扫描课程 |
-| `--require-live` | 关闭 | 仅保留“直播中”结果 |
-| `--live-check-timeout` | `30.0` | 单候选课程直播状态最大等待秒数 |
-| `--live-check-interval` | `2.0` | 直播状态轮询间隔秒数 |
-
-### 5.3 `analysis` 基础参数
-
-| 参数 | 默认值 | 含义 |
-|---|---|---|
-| `--course-id` | 必填 | 课程 ID |
-| `--sub-id` | 必填 | 直播子 ID |
-| `--poll-interval` | `10.0` | 上游流信息轮询间隔（秒） |
-| `--output-dir` | 空 | 输出根目录；不传则在当前目录创建会话目录 |
-
-### 5.4 `analysis` stream 实时参数
-
-| 参数 | 默认值 | 含义 |
-|---|---|---|
-| `--rt-model` | `gpt-4.1-mini` | 文本分析模型（`glm-*` 会自动切换到 GLM 调用链路） |
-| `--rt-asr-scene` | `zh` | 实时 ASR 场景（`zh` / `multi`） |
-| `--rt-asr-model` | 无 | 实时 ASR 模型（必填） |
-| `--rt-hotwords-file` | `config/realtime_hotwords.json` | 热词 JSON 数组文件 |
-| `--rt-window-sentences` | `8` | 句级滑窗大小 |
-| `--rt-stream-analysis-workers` | `32` | 流式分析并发 worker 数 |
-| `--rt-stream-queue-size` | `100` | 流式分析队列上限 |
-| `--rt-asr-endpoint` | `wss://dashscope.aliyuncs.com/api-ws/v1/inference` | DashScope WebSocket 地址 |
-| `--rt-translation-target-languages` | `zh` | 多语场景翻译目标语言（逗号分隔） |
-| `--rt-keywords-file` | `config/realtime_keywords.json` | 关键词规则文件 |
-| `--rt-api-base-url` | 空 | OpenAI 兼容网关地址 |
-| `--rt-analysis-request-timeout-sec` | `15.0` | 分析单请求超时 |
-| `--rt-analysis-stage-timeout-sec` | `60.0` | 分析阶段总超时 |
-| `--rt-analysis-retry-count` | `4` | 分析阶段最大尝试次数 |
-| `--rt-analysis-retry-interval-sec` | `0.2` | 分析重试间隔 |
-| `--rt-alert-threshold` | `90` | 触发 `[ALERT]` 的阈值 |
-| `--rt-dingtalk-enabled` | 关闭（`analysis` 启动时必须显式开启） | 开启钉钉告警推送 |
-| `--rt-dingtalk-cooldown-sec` | `30.0` | 钉钉告警冷却时间（秒） |
-| `--rt-dingtalk-queue-size` | `500` | 钉钉发送队列上限（满时丢最旧保最新） |
-| `--rt-context-recent-required` | `4` | 最近必须可用片段数 |
-| `--rt-context-wait-timeout-sec-1` | `1.0` | 最近片段齐备后额外等待时间 |
-| `--rt-context-wait-timeout-sec-2` | `5.0` | 等待最近片段齐备的最大时长 |
-| `--rt-log-rotate-max-bytes` | `67108864` | 单个 realtime 日志文件轮转阈值（字节） |
-| `--rt-log-rotate-backup-count` | `20` | 每个 realtime 日志最多保留历史份数 |
-| `--tingwu-enabled` | 关闭 | 开启课后听悟链路（整段音频录制 + 异步 worker） |
-| `--tingwu-poll-interval-sec` | `30.0` | 听悟任务轮询间隔（秒） |
-| `--tingwu-max-wait-hours` | `6.0` | 听悟任务最长等待时长（小时） |
-
-补充约束：
-
-- `DASHSCOPE_API_KEY` 必须可用（stream ASR 必需）。
-- `--rt-hotwords-file` 必须是可读的 JSON 数组文件（`[]` 合法）。
-- `analysis` 模式必须显式传 `--rt-dingtalk-enabled`，并且机器人配置（`DINGTALK_WEBHOOK` / `DINGTALK_SECRET`）必须可用。
-- `--rt-dingtalk-queue-size` 必须 `>= 1`。
-- 开启 `--tingwu-enabled` 时，必须提供标准键名 `ALIBABA_CLOUD_ACCESS_KEY_*`、`TINGWU_APP_KEY`、`TINGWU_OSS_*`，且本机需有 `ffmpeg/ffprobe`。
-
-### 5.5 `auto-analysis` 参数
-
-| 参数 | 默认值 | 含义 |
-|---|---|---|
-| `--config` | 必填 | 自动调度配置 JSON 路径 |
-| `--username` | 空 | 统一认证账号；不传则读 `.account` |
-| `--password` | 空 | 统一认证密码；不传则读 `.account` |
-| `--tenant-code` | `112` | 租户代码 |
-| `--authcode` | 空 | 验证码（仅登录要求时填写） |
-| `--timeout` | `20` | HTTP 超时秒数 |
-
-### 5.6 `mic-listen` 基础参数
-
-| 参数 | 默认值 | 含义 |
-|---|---|---|
-| `--host` | `127.0.0.1` | 监听地址 |
-| `--port` | `18765` | 监听端口 |
-| `--session-dir` | 空 | 输出目录；不传则自动创建 `mic_session_<timestamp>` |
-| `--mic-upload-token` | 空 | 上传令牌；也可用环境变量 `MIC_UPLOAD_TOKEN` |
-| `--mic-chunk-max-bytes` | `10485760` | 单次上传最大字节数 |
-| `--mic-chunk-dir` | `_rt_chunks_mic` | 接收切片目录（相对路径时挂到 `session-dir` 下） |
-
-### 5.7 `mic-listen` 实时参数
-
-`mic-listen` 与 `analysis` 共享的 stream 分析参数如下（`mic-listen` 还额外支持 chunk 相关参数）：
-
-```text
---rt-model
---rt-asr-scene
---rt-asr-model
---rt-hotwords-file
---rt-window-sentences
---rt-stream-analysis-workers
---rt-stream-queue-size
---rt-asr-endpoint
---rt-translation-target-languages
---rt-keywords-file
---rt-api-base-url
---rt-analysis-request-timeout-sec
---rt-analysis-stage-timeout-sec
---rt-analysis-retry-count
---rt-analysis-retry-interval-sec
---rt-alert-threshold
---rt-dingtalk-enabled
---rt-dingtalk-cooldown-sec
---rt-dingtalk-queue-size
---rt-context-recent-required
---rt-context-wait-timeout-sec-1
---rt-context-wait-timeout-sec-2
---rt-log-rotate-max-bytes
---rt-log-rotate-backup-count
-```
-
-`mic-listen` 额外参数：
-
-| 参数 | 默认值 | 含义 |
-|---|---|---|
-| `--rt-profile-enabled` | 关闭 | 额外输出性能剖析日志 `realtime_profile.jsonl` |
-
-模式约束：
-
-- chunk 模式：必须显式传 `--rt-stt-model`。
-- stream 模式：必须显式传 `--rt-asr-model` 且必须启用 `--rt-dingtalk-enabled`。
-- 日志轮转参数约束：`--rt-log-rotate-max-bytes >= 1048576`，`--rt-log-rotate-backup-count >= 1`。
-- 钉钉队列参数约束：`--rt-dingtalk-queue-size >= 1`。
-
-### 5.8 `tingwu-process` 参数
-
-| 参数 | 默认值 | 含义 |
-|---|---|---|
-| `--job-file` | 必填 | `analysis` 生成的 `tingwu_job.json` 路径；可用于手工重跑听悟后处理 |
-
-### 5.9 `mic-publish` 参数
-
-| 参数 | 默认值 | 适用模式 | 含义 |
-|---|---|---|---|
-| `--target-url` | 必填 | 全部 | `mic-listen` 地址（如 `http://127.0.0.1:18765`） |
-| `--mic-upload-token` | 必填 | 全部 | 与 `mic-listen` 一致的上传令牌 |
-| `--device` | 必填 | 全部 | 麦克风设备名 |
-| `--rt-pipeline-mode` | `chunk` | 全部 | 发布模式：`chunk` / `stream` |
-| `--chunk-seconds` | `10.0` | chunk | 本地切片长度 |
-| `--stream-frame-duration-ms` | `100` | stream | 每帧推送时长 |
-| `--work-dir` / `--worker-dir` | 空 | chunk | 本地临时切片目录 |
-| `--ffmpeg-bin` | 空 | 全部 | ffmpeg 路径；不传则走 PATH |
-| `--request-timeout-sec` | `10.0` | 全部 | 请求超时 |
-| `--ready-age-sec` | `1.2` | chunk | 文件稳定后再上传的等待时间 |
-| `--retry-base-sec` | `0.5` | 全部 | 重试基准退避 |
-| `--retry-max-sec` | `8.0` | 全部 | 重试最大退避 |
-| `--scan-interval-sec` | `0.2` | chunk | 本地切片扫描周期 |
-
-### 5.10 `mic-list-devices` 参数
-
-| 参数 | 默认值 | 含义 |
-|---|---|---|
-| `--ffmpeg-bin` | 空 | ffmpeg 路径；不传则走 PATH |
-
-## 6. 主要输出文件
-
-### 6.1 `analysis` 会话目录
-
-- `realtime_transcripts.jsonl`：实时转写。
-- `realtime_insights.jsonl`：结构化分析结果。
-- `realtime_insights.log`：中文可读日志。
-- `realtime_asr_events.jsonl`：stream 句级 ASR 事件。
-- `analysis_prompt_trace.jsonl`：分析请求跟踪。
-- `realtime_runtime_heartbeat.jsonl`：运行态心跳（默认 10s 一条，含线程状态/计数器快照）。
-- `realtime_runtime_events.jsonl`：运行态故障与恢复事件（P0/P1 判级）。
-- `realtime_runtime_dingtalk_trace.jsonl`：运行态分级告警发送跟踪（有运行态告警时写入）。
-- `tingwu_audio_full.mp3`：`--tingwu-enabled` 时生成的课程整段音频。
-- `tingwu_audio_recording_report.json`：听悟录音分段/合并报告。
-- `tingwu_job.json`：异步 worker 任务描述文件。
-- `tingwu_process.log`：听悟 worker 日志。
-- `tingwu_process_error.json`：听悟 worker 失败详情（失败时生成）。
-- `tingwu_summary.md`：听悟 JSON 渲染后的本地 Markdown 汇总。
-- `tingwu_results/*.json`：听悟原始能力 JSON 结果。
-- 以上 realtime 日志默认启用按大小轮转：主文件达到 `--rt-log-rotate-max-bytes` 后滚动为 `.1/.2/...`，最多保留 `--rt-log-rotate-backup-count` 份历史。
-
-### 6.2 `mic-listen` 会话目录
-
-- `realtime_transcripts.jsonl`
-- `realtime_insights.jsonl`
-- `realtime_insights.log`
-- `realtime_asr_events.jsonl`（stream 模式）
-- `realtime_dingtalk_trace.jsonl`（启用钉钉时）
-- `realtime_profile.jsonl`（启用 `--rt-profile-enabled` 时）
-- 以上 realtime 日志同样启用按大小轮转（命名规则与 `analysis` 一致）。
-
-## 7. 自定义关键词、热词与系统提示词
-
-这一节用于按你的课程需求，修改：
-
-- `config/realtime_keywords.json`：自定义实时分析规则（等价于“规则化 prompt 配置”）与紧急关键词。
-- `config/realtime_hotwords.json`：自定义 stream ASR 的转写/翻译热词。
-- `config/realtime_system_prompt.txt`：自定义实时分析系统提示词模板。
-
-### 7.1 三个配置分别影响什么
-
-| 文件 | 生效范围 | 作用 |
-|---|---|---|
-| `config/realtime_keywords.json` | `analysis`、`mic-listen`（chunk/stream 都会用） | 注入分析规则，影响 `important` 判定、`event_type` 与告警内容 |
-| `config/realtime_hotwords.json` | `analysis`、`mic-listen --rt-pipeline-mode stream` | 传给 DashScope 实时 ASR，提升指定词的识别/翻译命中率 |
-| `config/realtime_system_prompt.txt` | `analysis`、`mic-listen`（chunk/stream 都会用） | 实时分析系统提示词模板，统一约束 JSON 输出与判定逻辑 |
-
-注意：
-
-- 修改任一配置后，都需要重启 `analysis` 或 `mic-listen` 才会生效。
-- `realtime_keywords.json` 配的是“规则内容”（会进入分析提示词）。
-- `realtime_system_prompt.txt` 配的是系统提示词模板，支持占位符 `{{CURRENT_SEGMENT_REF}}`（运行时会替换成“当前17.5秒文本”或“当前文本段”这类描述）。
-
-### 7.2 自定义 `realtime_keywords.json`（紧急关键词 + 规则 prompt）
-
-推荐使用当前默认的 `version: 2` 分组格式：
-
-| 字段 | 含义 | 修改建议 |
-|---|---|---|
-| `global_negative_terms` | 全局负向词（命中时倾向降权） | 放“闲聊/测试/无关口头语”等非紧急内容 |
-| `groups[].id` | 事件类型唯一标识 | 使用英文短 id，如 `exam_notice` |
-| `groups[].label` | 事件类型显示名 | 用中文业务名，如“考试通知” |
-| `groups[].aliases` | 同义触发词 | 放常见关键词、同义词、缩写 |
-| `groups[].phrases` | 典型完整短语 | 放老师常说的完整表达 |
-| `groups[].detail_cues` | 延续细节线索 | 放题号/截止时间/链接/口令等执行细节词 |
-
-新增一个事件分组（示例）：
-
-```json
-{
-  "id": "exam_notice",
-  "label": "考试通知",
-  "aliases": ["考试", "考试安排", "期中考试", "期末考试"],
-  "phrases": ["下周进行期中考试", "考试时间有调整"],
-  "detail_cues": ["考试时间", "考试地点", "考试范围", "开卷", "闭卷"]
-}
-```
-
-删除一个事件分组：
-
-1. 在 `groups` 中删除对应 `id` 的对象。
-2. 如该类词也出现在 `realtime_hotwords.json`，按需同步删除。
-
-修改一个事件分组：
-
-1. 保持 `id` 不变（避免事件类型漂移）。
-2. 按业务迭代更新 `aliases`/`phrases`/`detail_cues`。
-3. 高频误报词加入 `global_negative_terms`。
-
-兼容说明：
-
-- 旧版字段 `important_terms` / `important_phrases` / `negative_terms` 仍兼容。
-- 但新配置建议统一用 `version: 2 + groups`，更容易按业务扩展。
-
-### 7.3 自定义 `realtime_hotwords.json`（stream 转写/翻译热词）
-
-文件格式必须是 JSON 字符串数组，例如：
-
-```json
-[
-  "签到",
-  "签到码",
-  "作业提交",
-  "截止时间",
-  "期中考试"
-]
-```
-
-增删改规则：
-
-1. 新增热词：直接追加一个字符串元素。
-2. 删除热词：删除对应字符串元素。
-3. 修改热词：直接改字符串内容，尽量贴近教师真实说法。
-
-注意：
-
-- 根节点必须是数组；不是数组会导致 stream 模式启动失败。
-- 文件不可读或 JSON 非法，也会导致 stream 模式启动失败。
-- 空数组 `[]` 合法，但会失去热词增强效果。
-
-### 7.4 校验与生效步骤
-
-1. 校验 JSON 语法：
+校验 JSON：
 
 ```bash
 python -m json.tool config/realtime_keywords.json > /dev/null
 python -m json.tool config/realtime_hotwords.json > /dev/null
 ```
 
-2. 重启 `analysis` 或 `mic-listen`。
+如果需要保留个人版本，可以新建：
 
-3. 观察日志确认加载成功：
+```text
+config/realtime_keywords.local.json
+config/realtime_hotwords.local.json
+config/auto_analysis.local.json
+```
 
-- `keywords` 文件异常时，会打印 `using empty rules`（流程不崩，但规则失效）。
-- stream 成功加载热词时，会打印 `loaded hotwords file ... items=<N>`。
+程序不会自动读取 `.local.json`；使用时需要在命令或课表配置中显式指定，例如 `--rt-keywords-file config/realtime_keywords.local.json`。
 
-### 7.5 本地隐私配置（使用说明）
+## 输出文件
 
-本地使用个人配置时，只需要把相关文件名从默认版本改为 `.local.json` 版本：
+### `analysis` 会话目录
 
-- `config/realtime_keywords.json` -> `config/realtime_keywords.local.json`
-- `config/realtime_hotwords.json` -> `config/realtime_hotwords.local.json`
-- `config/auto_analysis.json` -> `config/auto_analysis.local.json`
+| 文件                                      | 内容               |
+| ----------------------------------------- | ------------------ |
+| `realtime_transcripts.jsonl`            | 实时转写片段       |
+| `realtime_insights.jsonl`               | 结构化分析结果     |
+| `realtime_insights.log`                 | 中文可读分析日志   |
+| `realtime_asr_events.jsonl`             | 流式 ASR 句级事件  |
+| `analysis_prompt_trace.jsonl`           | LLM 请求与解析跟踪 |
+| `realtime_dingtalk_trace.jsonl`         | 钉钉推送记录       |
+| `realtime_runtime_heartbeat.jsonl`      | 运行态心跳         |
+| `realtime_runtime_events.jsonl`         | 运行态事件         |
+| `realtime_runtime_dingtalk_trace.jsonl` | 运行态告警推送记录 |
 
-路径仍在 `config/` 目录下，不需要改目录结构，只改文件名即可。
+### `auto-analysis` 运行目录
+
+| 文件                                            | 内容                            |
+| ----------------------------------------------- | ------------------------------- |
+| `auto_analysis_<timestamp>/auto_analysis.log` | 自动调度日志                    |
+| `records/<course_session>/...`                | 每门课程各自的`analysis` 输出 |
+
+### `mic-listen` 会话目录
+
+| 文件                              | 内容                                          |
+| --------------------------------- | --------------------------------------------- |
+| `realtime_transcripts.jsonl`    | 麦克风实时转写片段                            |
+| `realtime_insights.jsonl`       | 结构化分析结果                                |
+| `realtime_insights.log`         | 中文可读分析日志                              |
+| `realtime_asr_events.jsonl`     | stream 模式 ASR 事件                          |
+| `analysis_prompt_trace.jsonl`   | LLM 请求与解析跟踪                            |
+| `realtime_dingtalk_trace.jsonl` | 钉钉推送记录                                  |
+| `realtime_profile.jsonl`        | 启用`--rt-profile-enabled` 后生成的性能日志 |
+
+### 听悟后处理
+
+| 文件                                   | 内容                           |
+| -------------------------------------- | ------------------------------ |
+| `tingwu_audio_full.mp3`              | 课程整段音频                   |
+| `tingwu_audio_recording_report.json` | 录音分段与合并报告             |
+| `tingwu_job.json`                    | 异步后处理任务描述             |
+| `tingwu_process.log`                 | 听悟 worker 日志               |
+| `tingwu_process_error.json`          | 失败详情                       |
+| `tingwu_summary.md`                  | 听悟结果渲染后的 Markdown 汇总 |
+| `tingwu_results/*.json`              | 听悟原始结果                   |
+
+日志默认按大小轮转，避免长期运行时单个文件过大。
+
+## 开发和测试
+
+运行测试：
+
+```bash
+python -m unittest discover -s tests
+```
+
+测试集中在 CLI 参数解析、账号配置、课程扫描、直播状态判断、调度、日志轮转和听悟处理等基础行为。
+
+完整测试和 `auto-analysis` 推荐在 Linux / WSL 运行；原生 Windows 只适合运行不导入自动调度模块的测试子集。
+
+代码大致分布：
+
+```text
+src/auth/      登录和 token 管理
+src/scan/      课程扫描与直播状态检查
+src/live/      直播接入、实时分析、麦克风链路、自动调度
+src/common/    配置、日志、HTTP、课程元数据等公共模块
+tests/         单元测试
+```
+
+## 注意事项
+
+- 实时识别和 LLM 判断都可能误报或漏报。
+- 长期运行会产生音频、转写和日志文件，请定期清理 `records/` 与 `mic_session_*`。
+- `.account`、本地课表、会话输出中可能包含账号、API Key、课程音频或通知内容，请妥善保存。
+- 不要将本项目用于绕过课程要求、侵犯他人隐私或违反平台规则的用途。
